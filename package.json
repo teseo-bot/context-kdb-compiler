@@ -1,0 +1,27 @@
+{
+  "name": "crm-agentico-compiler",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
+    "@hono/node-server": "^1.19.14",
+    "hono": "^4.12.14",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.20.0"
+  }
+}
