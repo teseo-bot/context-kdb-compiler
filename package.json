@@ -19,7 +19,9 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
+    "@google/genai": "^1.50.1",
     "@hono/node-server": "^1.19.14",
+    "dotenv": "^17.4.2",
     "hono": "^4.12.14",
     "pdf-parse": "^2.4.5",
     "pg": "^8.20.0"

@@ -2,12 +2,43 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DocumentDistiller = void 0;
 const pdf_parse_1 = require("pdf-parse");
+const genai_1 = require("@google/genai");
+const dotenv_1 = require("dotenv");
+(0, dotenv_1.config)();
+const apiKey = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0] || '';
+const ai = new genai_1.GoogleGenAI({ apiKey });
 class DocumentDistiller {
+    /**
+     * Destila contenido multimedia usando Gemini Vision/Audio
+     */
+    async distillMedia(buffer, mimeType) {
+        const base64Data = buffer.toString('base64');
+        console.log(`[DocumentDistiller] Destilando media con Gemini... mimeType: ${mimeType}`);
+        const response = await ai.models.generateContent({
+            model: 'gemini-1.5-flash',
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        { inlineData: { data: base64Data, mimeType } },
+                        { text: "Analiza detalladamente este asset (imagen/documento/audio/video). Genera una transcripción o descripción técnica exhaustiva, optimizada para ser indexada en un sistema RAG de base de conocimiento." }
+                    ]
+                }
+            ]
+        });
+        console.log(`[DocumentDistiller] Destilación completada.`);
+        return response.text || '';
+    }
     /**
      * Processes a raw file buffer and returns a simulated Markdown string.
      */
     async processBuffer(buffer, mimeType, filename) {
         let rawText = '';
+        const mediaTypes = [
+            'image/jpeg', 'image/png', 'image/webp',
+            'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mpeg',
+            'video/mp4'
+        ];
         if (mimeType === 'application/pdf') {
             // Parse PDF using the new API
             const parser = new pdf_parse_1.PDFParse({ data: buffer });
@@ -22,6 +53,9 @@ class DocumentDistiller {
         else if (mimeType === 'text/plain') {
             // Validate/read TXT as UTF-8
             rawText = buffer.toString('utf-8');
+        }
+        else if (mediaTypes.includes(mimeType)) {
+            rawText = await this.distillMedia(buffer, mimeType);
         }
         else {
             throw new Error(`Unsupported mimeType: ${mimeType} for file: ${filename}`);

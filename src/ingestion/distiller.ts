@@ -1,11 +1,48 @@
 import { PDFParse } from 'pdf-parse';
+import { GoogleGenAI } from '@google/genai';
+import { config } from 'dotenv';
+
+config();
+
+const apiKey = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0] || '';
+const ai = new GoogleGenAI({ apiKey });
 
 export class DocumentDistiller {
+  /**
+   * Destila contenido multimedia usando Gemini Vision/Audio
+   */
+  private async distillMedia(buffer: Buffer, mimeType: string): Promise<string> {
+    const base64Data = buffer.toString('base64');
+    
+    console.log(`[DocumentDistiller] Destilando media con Gemini... mimeType: ${mimeType}`);
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { data: base64Data, mimeType } },
+            { text: "Analiza detalladamente este asset (imagen/documento/audio/video). Genera una transcripción o descripción técnica exhaustiva, optimizada para ser indexada en un sistema RAG de base de conocimiento." }
+          ]
+        }
+      ]
+    });
+    
+    console.log(`[DocumentDistiller] Destilación completada.`);
+    return response.text || '';
+  }
+
   /**
    * Processes a raw file buffer and returns a simulated Markdown string.
    */
   async processBuffer(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
     let rawText = '';
+
+    const mediaTypes = [
+      'image/jpeg', 'image/png', 'image/webp',
+      'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mpeg',
+      'video/mp4'
+    ];
 
     if (mimeType === 'application/pdf') {
       // Parse PDF using the new API
@@ -19,6 +56,8 @@ export class DocumentDistiller {
     } else if (mimeType === 'text/plain') {
       // Validate/read TXT as UTF-8
       rawText = buffer.toString('utf-8');
+    } else if (mediaTypes.includes(mimeType)) {
+      rawText = await this.distillMedia(buffer, mimeType);
     } else {
       throw new Error(`Unsupported mimeType: ${mimeType} for file: ${filename}`);
     }
