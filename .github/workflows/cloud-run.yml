@@ -11,7 +11,7 @@ env:
   REGION: us-central1
   SERVICE_NAME: context-kdb-compiler
   GAR_LOCATION: us-central1-docker.pkg.dev
-  REPOSITORY: crm-agentico
+  REPOSITORY: teseo-context-repo
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
