@@ -1,19 +1,39 @@
+substitutions:
+  _REGION: us-central1
+  _IMAGE_REPO: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/teseo-context-repo/context-kdb-compiler
+
 steps:
-- name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/teseobot-487515/crm-agentico-compiler', '.']
-- name: 'gcr.io/cloud-builders/docker'
-  args: ['push', 'gcr.io/teseobot-487515/crm-agentico-compiler']
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+- id: build
+  name: 'gcr.io/cloud-builders/docker'
+  args:
+  - 'build'
+  - '--no-cache'
+  - '-t'
+  - '${_IMAGE_REPO}:${COMMIT_SHA}'
+  - '-t'
+  - '${_IMAGE_REPO}:latest'
+  - '.'
+
+- id: push
+  name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '--all-tags', '${_IMAGE_REPO}']
+
+- id: deploy
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: gcloud
   args:
-  - 'run'
-  - 'deploy'
-  - 'crm-agentico-compiler'
-  - '--image'
-  - 'gcr.io/teseobot-487515/crm-agentico-compiler'
-  - '--region'
-  - 'us-central1'
+    - 'run'
+    - 'deploy'
+    - 'context-kdb-compiler'
+    - '--image'
+    - '${_IMAGE_REPO}:${COMMIT_SHA}'
+    - '--region'
+    - '${_REGION}'
+  waitFor: ['push']
+
 images:
-- 'gcr.io/teseobot-487515/crm-agentico-compiler'
+- '${_IMAGE_REPO}:${COMMIT_SHA}'
+- '${_IMAGE_REPO}:latest'
+
 options:
   logging: CLOUD_LOGGING_ONLY

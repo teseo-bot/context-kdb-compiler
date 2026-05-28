@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: teseobot-487515
+  PROJECT_ID: teseocontextkdb
   REGION: us-central1
-  SERVICE_NAME: crm-agentico-compiler
+  SERVICE_NAME: context-kdb-compiler
   GAR_LOCATION: us-central1-docker.pkg.dev
   REPOSITORY: crm-agentico
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
