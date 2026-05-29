@@ -44,6 +44,8 @@ jobs:
           image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
           env_vars: |
             NODE_ENV=production
+          flags: --add-cloudsql-instances=teseocontextkdb:us-central1:context-kdb-db
+
           secrets: |
             DATABASE_URL=DATABASE_URL:latest
             GEMINI_DIRECT_KEY=GEMINI_DIRECT_KEY:latest
