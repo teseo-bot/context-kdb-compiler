@@ -9,7 +9,7 @@ const gcsAdapter = new GcsStorageAdapter();
 const distiller = new DocumentDistiller();
 
 // Initialize CompilerEngine. In production, we'd pass environment variables here.
-const engine = new CompilerEngine();
+const engine = new CompilerEngine({ dbUrl: process.env.DATABASE_URL });
 
 // Ensure DB is initialized before starting processing
 let dbInitialized = false;
