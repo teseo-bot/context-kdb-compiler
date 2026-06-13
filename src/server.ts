@@ -3,7 +3,7 @@ import { serve } from '@hono/node-server';
 import { GcsStorageAdapter } from './infrastructure/storage-adapter';
 import { CompilerEngine } from './core/compiler-engine';
 import { DocumentDistiller } from './ingestion/distiller';
-import { IngestRequestV1Schema } from '@teseo/contracts'; // Import the new schema
+import { IngestRequestV1Schema } from './schemas/contracts'; // Import the new schema
 import { z } from 'zod'; // For schema validation
 
 const app = new Hono();
