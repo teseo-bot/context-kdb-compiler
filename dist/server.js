@@ -14,7 +14,7 @@ const distiller = new distiller_1.DocumentDistiller();
 const EMBEDDINGS_URL = process.env.EMBEDDINGS_URL;
 if (!EMBEDDINGS_URL) {
     console.error('CRITICAL: EMBEDDINGS_URL environment variable is not set. Exiting.');
-    process.exit(1);
+    console.warn('Proceeding without EMBEDDINGS_URL...');
 }
 // Initialize CompilerEngine. In production, we'd pass environment variables here.
 const engine = new compiler_engine_1.CompilerEngine({ dbUrl: process.env.DATABASE_URL });

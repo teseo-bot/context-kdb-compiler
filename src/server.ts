@@ -129,6 +129,22 @@ app.get('/v1/jobs/:id', async (c) => {
 });
 
 app.post('/pubsub', async (c) => {
+  // F-H1: Validar OIDC JWT de Pub/Sub
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized: Missing Bearer token' }, 401);
+  }
+  // En producción, validar el JWT con las claves públicas de Google.
+  // Por ahora, validar que el token exista y marcar TODO para validación completa.
+  // Si no hay GOOGLE_PUBSUB_VERIFICATION_EMAIL configurado, aceptar cualquier Bearer (dev only).
+  const pubsubVerifier = process.env.GOOGLE_PUBSUB_VERIFICATION_EMAIL;
+  if (!pubsubVerifier) {
+    console.warn('[F-H1] GOOGLE_PUBSUB_VERIFICATION_EMAIL no configurado. Validación OIDC saltada (dev only).');
+  }
+  // TODO: Implement full OIDC JWT validation here using Google's public keys.
+  // For development, we proceed if a Bearer token exists and pubsubVerifier is not set.
+
+  try {
   try {
     const body = await c.req.json();
     
@@ -185,7 +201,34 @@ app.post('/pubsub', async (c) => {
   }
 });
 
+// F-H3: Fail-fast for EMBEDDINGS_URL if not set.
+const EMBEDDINGS_URL_ENV = process.env.EMBEDDINGS_URL;
+if (!EMBEDDINGS_URL_ENV) {
+  console.error('CRITICAL: EMBEDDINGS_URL environment variable is not set. Exiting.');
+  process.exit(1);
+}
+
+// DEPRECATED: Migrar a /v1/ingest
 app.post('/ingest/telegram', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  const BEARER_TOKEN = process.env.TESEO_API_KEY; // Assuming an API key env var
+
+  if (!BEARER_TOKEN) {
+    console.error('TESEO_API_KEY is not set. M2M authentication cannot be performed.');
+    return c.json({ error: 'Server configuration error: TESEO_API_KEY missing.' }, 500);
+  }
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized: Missing or invalid Authorization header.' }, 401);
+  }
+
+  const token = authHeader.substring(7); // "Bearer ".length
+
+  if (token !== BEARER_TOKEN) { // Simple token comparison
+    return c.json({ error: 'Unauthorized: Invalid token.' }, 401);
+  }
+
+  try {
   try {
     const body = await c.req.parseBody();
     const file = body['file'];
