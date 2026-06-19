@@ -60,6 +60,7 @@ export class CompilerEngine {
           hash,
           chunkCount: parseInt(chunksRes.rows[0].count, 10),
         };
+      }
 
       await client.query('BEGIN');
 

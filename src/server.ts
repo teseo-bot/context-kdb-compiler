@@ -10,13 +10,6 @@ const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
 const distiller = new DocumentDistiller();
 
-// E11-H4: Validate EMBEDDINGS_URL at boot (fail-fast)
-const EMBEDDINGS_URL = process.env.EMBEDDINGS_URL;
-if (!EMBEDDINGS_URL) {
-  console.error('CRITICAL: EMBEDDINGS_URL environment variable is not set. Exiting.');
-  console.warn('Proceeding without EMBEDDINGS_URL...');
-}
-
 // Initialize CompilerEngine. In production, we'd pass environment variables here.
 const engine = new CompilerEngine({ dbUrl: process.env.DATABASE_URL });
 
@@ -145,7 +138,6 @@ app.post('/pubsub', async (c) => {
   // For development, we proceed if a Bearer token exists and pubsubVerifier is not set.
 
   try {
-  try {
     const body = await c.req.json();
     
     // Pub/Sub push messages are structured as:
@@ -228,7 +220,6 @@ app.post('/ingest/telegram', async (c) => {
     return c.json({ error: 'Unauthorized: Invalid token.' }, 401);
   }
 
-  try {
   try {
     const body = await c.req.parseBody();
     const file = body['file'];
