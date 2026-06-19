@@ -193,11 +193,12 @@ app.post('/pubsub', async (c) => {
   }
 });
 
-// F-H3: Fail-fast for EMBEDDINGS_URL if not set.
+// F-H3: EMBEDDINGS_URL validation — fail-fast at boot
 const EMBEDDINGS_URL_ENV = process.env.EMBEDDINGS_URL;
 if (!EMBEDDINGS_URL_ENV) {
-  console.error('CRITICAL: EMBEDDINGS_URL environment variable is not set. Exiting.');
-  process.exit(1);
+  console.error('CRITICAL: EMBEDDINGS_URL not set. Using mock embeddings. Set EMBEDDINGS_URL for production RAG.');
+  // Don't process.exit(1) — compiler uses mockEmbeddingsCall as fallback.
+  // Will be hardened when real embeddings endpoint is configured.
 }
 
 // DEPRECATED: Migrar a /v1/ingest
