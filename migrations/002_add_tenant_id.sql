@@ -7,7 +7,9 @@ CREATE INDEX IF NOT EXISTS documents_tenant_id_idx ON documents(tenant_id);
 CREATE INDEX IF NOT EXISTS chunks_tenant_id_idx ON chunks(tenant_id);
 
 -- Idempotencia: hash único por tenant (no global)
-DROP INDEX IF EXISTS documents_document_hash_key;
+-- Nota: documents_document_hash_key es una constraint UNIQUE, no un índice,
+-- así que usamos ALTER TABLE para remover la constraint
+ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_document_hash_key;
 CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_hash_uniq
   ON documents(tenant_id, document_hash);
 
@@ -24,7 +26,7 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
     document_metadata JSONB DEFAULT '[]'::jsonb,
     error TEXT,
     completed_at TIMESTAMPTZ,
-    created_at TIMESTANDP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     idempotency_key TEXT
 );
 
