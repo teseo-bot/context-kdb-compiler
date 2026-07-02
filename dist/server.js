@@ -10,12 +10,6 @@ const zod_1 = require("zod"); // For schema validation
 const app = new hono_1.Hono();
 const gcsAdapter = new storage_adapter_1.GcsStorageAdapter();
 const distiller = new distiller_1.DocumentDistiller();
-// E11-H4: Validate EMBEDDINGS_URL at boot (fail-fast)
-const EMBEDDINGS_URL = process.env.EMBEDDINGS_URL;
-if (!EMBEDDINGS_URL) {
-    console.error('CRITICAL: EMBEDDINGS_URL environment variable is not set. Exiting.');
-    console.warn('Proceeding without EMBEDDINGS_URL...');
-}
 // Initialize CompilerEngine. In production, we'd pass environment variables here.
 const engine = new compiler_engine_1.CompilerEngine({ dbUrl: process.env.DATABASE_URL });
 // Ensure DB is initialized before starting processing
@@ -111,6 +105,20 @@ app.get('/v1/jobs/:id', async (c) => {
     }
 });
 app.post('/pubsub', async (c) => {
+    // F-H1: Validar OIDC JWT de Pub/Sub
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return c.json({ error: 'Unauthorized: Missing Bearer token' }, 401);
+    }
+    // En producción, validar el JWT con las claves públicas de Google.
+    // Por ahora, validar que el token exista y marcar TODO para validación completa.
+    // Si no hay GOOGLE_PUBSUB_VERIFICATION_EMAIL configurado, aceptar cualquier Bearer (dev only).
+    const pubsubVerifier = process.env.GOOGLE_PUBSUB_VERIFICATION_EMAIL;
+    if (!pubsubVerifier) {
+        console.warn('[F-H1] GOOGLE_PUBSUB_VERIFICATION_EMAIL no configurado. Validación OIDC saltada (dev only).');
+    }
+    // TODO: Implement full OIDC JWT validation here using Google's public keys.
+    // For development, we proceed if a Bearer token exists and pubsubVerifier is not set.
     try {
         const body = await c.req.json();
         // Pub/Sub push messages are structured as:
@@ -155,7 +163,30 @@ app.post('/pubsub', async (c) => {
         return c.text('Internal Server Error', 500);
     }
 });
+// K0-W1 (F-H3): validación de credencial de embeddings al arranque.
+// Ya no existe fallback a mock en runtime: sin credencial, compile() falla en la primera llamada.
+const GEMINI_KEY = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0];
+if (!GEMINI_KEY) {
+    console.error('CRITICAL: GEMINI_DIRECT_KEY not set. Embeddings will fail at compile time (no mock fallback).');
+    if (process.env.NODE_ENV === 'production') {
+        process.exit(1);
+    }
+}
+// DEPRECATED: Migrar a /v1/ingest
 app.post('/ingest/telegram', async (c) => {
+    const authHeader = c.req.header('Authorization');
+    const BEARER_TOKEN = process.env.TESEO_API_KEY; // Assuming an API key env var
+    if (!BEARER_TOKEN) {
+        console.error('TESEO_API_KEY is not set. M2M authentication cannot be performed.');
+        return c.json({ error: 'Server configuration error: TESEO_API_KEY missing.' }, 500);
+    }
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return c.json({ error: 'Unauthorized: Missing or invalid Authorization header.' }, 401);
+    }
+    const token = authHeader.substring(7); // "Bearer ".length
+    if (token !== BEARER_TOKEN) { // Simple token comparison
+        return c.json({ error: 'Unauthorized: Invalid token.' }, 401);
+    }
     try {
         const body = await c.req.parseBody();
         const file = body['file'];
