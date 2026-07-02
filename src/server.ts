@@ -1,14 +1,28 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { Pool } from 'pg';
 import { GcsStorageAdapter } from './infrastructure/storage-adapter';
 import { CompilerEngine } from './core/compiler-engine';
 import { DocumentDistiller } from './ingestion/distiller';
+import { resolveDocumentContent } from './ingestion/resolve-document-content';
 import { IngestRequestV1Schema } from './schemas/contracts'; // Import the new schema
 import { z } from 'zod'; // For schema validation
+import { BundleStore } from './infrastructure/bundle-store';
+import { EmbeddingsClient, GeminiEmbeddingsClient } from './infrastructure/embeddings';
+import { MockEmbeddingsClient } from './infrastructure/embeddings.mock';
+import { indexDelta } from './indexing/indexer';
 
 const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
 const distiller = new DocumentDistiller();
+
+// K3-W2: pool y cliente de embeddings compartidos para la ruta /internal/index-delta.
+// Mismo patrón que CompilerEngine (K0-W1): mock SOLO bajo NODE_ENV==='test'.
+const indexerPool = new Pool({
+  connectionString: process.env.COLD_TIER_URL || process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5436/postgres',
+});
+const indexerEmbeddings: EmbeddingsClient =
+  process.env.NODE_ENV === 'test' ? new MockEmbeddingsClient() : new GeminiEmbeddingsClient();
 
 // Initialize CompilerEngine. In production, we'd pass environment variables here.
 const engine = new CompilerEngine({ dbUrl: process.env.DATABASE_URL });
@@ -53,7 +67,7 @@ app.post('/v1/ingest', async (c) => {
     const rawBody = await c.req.json();
     const parsedRequest = IngestRequestV1Schema.parse(rawBody);
 
-    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible } = parsedRequest;
+    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible, hocflit_hint } = parsedRequest;
 
     // E11-H3: Store ingestion job details in a new 'ingest_jobs' table
     // This is a conceptual call; actual implementation would use a DB client
@@ -75,23 +89,47 @@ app.post('/v1/ingest', async (c) => {
     console.log(`Ingestion job ${jobId} created for tenant ${tenant_id}. Starting document processing...`);
 
     // Simulate processing each document
+    // K9-W1b (gap PDFs binarios): content_encoding='base64' + mime_type soportado por
+    // DocumentDistiller se decodifica/extrae aquí. Un fallo de extracción/compile en UN
+    // documento NO debe tumbar el batch completo: se colecta y se reporta por-documento.
+    const documentErrors: Array<{ document_id: string; error: string }> = [];
     for (const doc of documents) {
-      // E11-H3: Propagate tenant_id to compiler/distiller if they directly handle it
-      const markdownContent = doc.content; // Assuming content is already markdown or easily convertible
       await ensureDb();
-      await engine.compile(markdownContent, {
-        title: doc.document_id,
-        source: `ingest-api/${jobId}/${doc.document_id}`,
-        tenantId: tenant_id, // Propagate tenant_id
-      });
-      // In a real system, each document compilation might update the job status
+      try {
+        // E11-H3: Propagate tenant_id to compiler/distiller if they directly handle it
+        const markdownContent = await resolveDocumentContent(doc, distiller);
+        await engine.compile(markdownContent, {
+          title: doc.document_id,
+          source: `ingest-api/${jobId}/${doc.document_id}`,
+          tenantId: tenant_id, // Propagate tenant_id
+          ...(doc.metadata ?? {}),
+          // K9-W1 (SPEC-K9 §2.2): sesgo HOCFLIT de origen, persistido en documents.metadata.
+          // Spread después de doc.metadata para que el hint del request gane si hubiera choque
+          // de clave, sin romper el shape existente de metadata por documento.
+          ...(hocflit_hint ? { hocflit_hint } : {}),
+        });
+        // In a real system, each document compilation might update the job status
+      } catch (docError) {
+        const message = docError instanceof Error ? docError.message : String(docError);
+        console.error(`[v1/ingest] Documento ${doc.document_id} falló en job ${jobId}:`, message);
+        documentErrors.push({ document_id: doc.document_id, error: message });
+      }
     }
 
-    // E11-H4: Update job status to complete (or 'processing' if truly async)
-    await engine.updateIngestJobStatus(jobId, 'completed');
+    // E11-H4: Update job status to complete (or 'processing' if truly async).
+    // K9-W1b: si hubo errores por-documento, el job queda 'completed_with_errors' en vez de
+    // 'completed' ciego; el batch avanza igual (no se aborta por un documento roto).
+    const finalStatus = documentErrors.length > 0 ? 'completed_with_errors' : 'completed';
+    await engine.updateIngestJobStatus(jobId, finalStatus);
 
-
-    return c.json({ jobId, status: 'accepted' }, 202);
+    return c.json(
+      {
+        jobId,
+        status: 'accepted',
+        ...(documentErrors.length > 0 ? { document_errors: documentErrors } : {}),
+      },
+      202
+    );
   } catch (error) {
     if (error instanceof z.ZodError) {
       console.error('Validation error for /v1/ingest:', error.issues);
@@ -193,12 +231,53 @@ app.post('/pubsub', async (c) => {
   }
 });
 
-// F-H3: EMBEDDINGS_URL validation — fail-fast at boot
-const EMBEDDINGS_URL_ENV = process.env.EMBEDDINGS_URL;
-if (!EMBEDDINGS_URL_ENV) {
-  console.error('CRITICAL: EMBEDDINGS_URL not set. Using mock embeddings. Set EMBEDDINGS_URL for production RAG.');
-  // Don't process.exit(1) — compiler uses mockEmbeddingsCall as fallback.
-  // Will be hardened when real embeddings endpoint is configured.
+// K3-W2 (BACKEND §A8, PLAN K3-W2): ruta M2M interna para disparar el índice delta de un
+// tenant (invocada por night-worker/phases/index-regen.ts vía HTTP interno, BACKEND §C2).
+// Auth: header `x-api-key` === process.env.M2M_API_KEY (no existía aún un patrón M2M por
+// x-api-key en este server.ts; las rutas /v1/* usan Authorization: Bearer con TESEO_API_KEY.
+// Se sigue literalmente lo pedido por la WU: header y variable de entorno distintos, dedicados
+// a llamadas servicio-a-servicio internas del Cerebro Virtual).
+app.post('/internal/index-delta', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/index-delta cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const { tenantId } = z.object({ tenantId: z.string().min(1) }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId });
+    const result = await indexDelta(tenantId, {
+      pool: indexerPool,
+      store,
+      embeddings: indexerEmbeddings,
+    });
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/index-delta:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// K0-W1 (F-H3): validación de credencial de embeddings al arranque.
+// Ya no existe fallback a mock en runtime: sin credencial, compile() falla en la primera llamada.
+const GEMINI_KEY = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0];
+if (!GEMINI_KEY) {
+  console.error('CRITICAL: GEMINI_DIRECT_KEY not set. Embeddings will fail at compile time (no mock fallback).');
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
 }
 
 // DEPRECATED: Migrar a /v1/ingest

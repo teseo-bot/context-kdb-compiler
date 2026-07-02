@@ -1,6 +1,30 @@
 
 import { z } from 'zod';
 
+// K9-W1: duplicado consciente de contracts/src/okf.ts::HocflitHintSchema — @teseo/contracts
+// no es dependencia npm del compiler (mismo motivo documentado en
+// src/infrastructure/concept-frontmatter.schema.ts). Copiado TEXTUALMENTE de
+// SPEC-K9-Interfaces-Ingesta.md §1.
+// K10-W1: +3 módulos de origen (finanzas, onboarding-academy, direccion) y altitude_min
+// opcional (piso de altitud; ver SPEC-K10 — "Dirección" ingesta conocimiento estratégico
+// transversal que debe caer en la cola HITL, que exige revisión humana para altitud >= 4).
+export const HOCFLIT_SYSTEMS = [
+  'h-talento-humano', 'o-operaciones', 'c-comercial',
+  'f-finanzas', 'l-legal', 'i-innovacion', 't-tecnologia',
+] as const;
+export const HocflitSystemSchema = z.enum(HOCFLIT_SYSTEMS);
+
+export const HocflitHintSchema = z.object({
+  system: HocflitSystemSchema,              // sesgo primario: tags[0] del concepto resultante
+  tags: z.array(z.string()).optional(),     // tags preset del origen (ej. 'pricing', 'icp')
+  source_module: z.enum([
+    'crm-comercial', 'assets-lab', 'compliance-monitor',
+    'finanzas', 'onboarding-academy', 'direccion', 'api',
+  ]),
+  altitude_min: z.number().int().min(1).max(5).optional(),  // piso de altitud (K10)
+});
+export type HocflitHint = z.infer<typeof HocflitHintSchema>;
+
 export const SenderSchema = z.object({
   id: z.string().min(1, "Sender ID cannot be empty"),
   name: z.string().optional(),
@@ -30,6 +54,13 @@ export const IngestDocumentSchema = z.object({
   document_id: z.string().min(1, "Document ID cannot be empty"),
   content: z.string().min(1, "Document content cannot be empty"),
   metadata: z.record(z.any()).optional(),
+  // K9-W1b (gap PDFs binarios): cuando content_encoding='base64', `content` es el
+  // buffer del archivo original codificado en base64 (no texto). El handler de
+  // /v1/ingest lo decodifica y, si mime_type es soportado por DocumentDistiller,
+  // extrae el texto/markdown antes de compilar. utf8 (default) preserva el
+  // comportamiento previo: `content` ya es texto/markdown plano.
+  content_encoding: z.enum(['utf8', 'base64']).default('utf8'),
+  mime_type: z.string().optional(),
 });
 
 export const IngestRequestV1Schema = z.object({
@@ -39,7 +70,10 @@ export const IngestRequestV1Schema = z.object({
   workflow_id: z.string().optional(),
   tags: z.array(z.string()).optional(),
   // For cold-tier migration, we might add a flag or version
-  cold_tier_eligible: z.boolean().default(true), 
+  cold_tier_eligible: z.boolean().default(true),
+  // K9-W1 (SPEC-K9 §2.2): sesgo HOCFLIT de origen, opcional. Se persiste en
+  // documents.metadata.hocflit_hint por cada documento del request.
+  hocflit_hint: HocflitHintSchema.optional(),
 });
 
 export type IngestDocument = z.infer<typeof IngestDocumentSchema>;
