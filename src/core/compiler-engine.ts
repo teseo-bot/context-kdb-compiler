@@ -1,10 +1,12 @@
 import { createHash } from 'crypto';
 import { Pool } from 'pg';
 import { chunkTextSemantic } from './semantic-chunker';
+import { EmbeddingsClient, GeminiEmbeddingsClient } from '../infrastructure/embeddings';
+import { MockEmbeddingsClient } from '../infrastructure/embeddings.mock';
 
 export interface CompilerOptions {
   dbUrl?: string; // e.g. postgres://user:pass@localhost:5436/dbname
-  vertexAiEndpoint?: string;
+  embeddings?: EmbeddingsClient;
 }
 
 export interface DocumentMetadata {
@@ -21,13 +23,16 @@ export interface CompileResult {
 
 export class CompilerEngine {
   private pool: Pool;
-  private endpoint: string;
+  private embeddings: EmbeddingsClient;
 
   constructor(opts?: CompilerOptions) {
     this.pool = new Pool({
       connectionString: opts?.dbUrl || 'postgres://postgres:postgres@localhost:5436/postgres',
     });
-    this.endpoint = opts?.vertexAiEndpoint || 'http://localhost:3000/fleetco-AI-gateway/embeddings';
+    // K0-W1: embeddings reales por default; mock SOLO bajo NODE_ENV==='test'.
+    this.embeddings =
+      opts?.embeddings ??
+      (process.env.NODE_ENV === 'test' ? new MockEmbeddingsClient() : new GeminiEmbeddingsClient());
   }
 
   /**
@@ -77,13 +82,13 @@ export class CompilerEngine {
         chunkOverlap: 50,
         // Embed fn that feeds the chunker to find boundaries
         embedFn: async (sentences: string[]) => {
-          return this.mockEmbeddingsCall(sentences);
+          return this.embeddings.embed(sentences);
         }
       });
 
       // 4. Embed Final Chunks & Insert
       const chunkTextsForEmbed = chunks.map(c => c.text);
-      const embeddings = await this.mockEmbeddingsCall(chunkTextsForEmbed);
+      const embeddings = await this.embeddings.embed(chunkTextsForEmbed);
 
       const documentIds = Array(chunks.length).fill(documentId);
       const chunkIndexes = chunks.map(c => c.index);
@@ -109,18 +114,6 @@ export class CompilerEngine {
     } finally {
       client.release();
     }
-  }
-
-  private async mockEmbeddingsCall(texts: string[]): Promise<number[][]> {
-    // Simulating a fetch to fleetco-AI-gateway -> Vertex AI
-    // We will return a fake 768-dimensional vector
-    return texts.map(text => {
-      // Create deterministic fake embedding based on text length and some pseudo-randomness
-      const vector = new Array(768).fill(0).map((_, i) => {
-        return (Math.sin(text.length + i) + 1) / 2; // Values between 0 and 1
-      });
-      return vector;
-    });
   }
 
   public async close() {
