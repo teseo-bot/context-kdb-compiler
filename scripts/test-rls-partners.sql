@@ -1,154 +1,107 @@
--- Test de RLS para okf_partner_concepts + kdb_partner_licenses
--- Transacción de prueba que se revierte al final
+-- Test de RLS para el índice Cold-Tier de aliados (migración 007)
+-- Paso a paso comentado, espejo de scripts/test-rls.sql
+-- Ejecución: psql -U postgres -h localhost -p 5436 -d postgres -f scripts/test-rls-partners.sql
+--
+-- Mecánica: el seed se inserta como rol de servicio (postgres, superuser: exento de RLS);
+-- los SELECT de verificación se hacen con SET ROLE app_user (no-superuser: RLS aplica).
+-- Todo dentro de una transacción que se REVIERTE al final.
+-- Requiere que exista el rol app_user con GRANT SELECT sobre las 3 tablas
+-- (el runner scripts/test-rls-partners.ts lo crea automáticamente).
 
 BEGIN;
 
--- UUIDs constantes para referencias
--- partner1: a1111111-1111-1111-1111-111111111111
--- partner2: a2222222-2222-2222-2222-222222222222
--- pkg1: b1111111-1111-1111-1111-111111111111
--- pkg2: b2222222-2222-2222-2222-222222222222
--- contract1: c1111111-1111-1111-1111-111111111111
--- contract2: c2222222-2222-2222-2222-222222222222
--- contract3: c3333333-3333-3333-3333-333333333333
-
--- === SETUP: Insertar conceptos de partner 1 ===
-SET app.partner_id='a1111111-1111-1111-1111-111111111111';
+-- === SETUP (rol de servicio): conceptos de partner 1 ===
+-- doc1: finanzas / altitude 2 · doc2: comercial / altitude 3 · doc3: operaciones / altitude 1
 INSERT INTO okf_partner_concepts (
     id, partner_id, package_id, version, path, gcs_path, frontmatter, body_text,
-    content_sha256, altitude, system_slug, updated_at
+    content_sha256, altitude, system_slug
 ) VALUES
-    (
-        'd1111111-1111-1111-1111-111111111111',
-        'a1111111-1111-1111-1111-111111111111'::uuid,
-        'b1111111-1111-1111-1111-111111111111'::uuid,
-        1, 'doc1.md', 'gs://bucket/doc1.md',
-        '{"title":"Doc 1"}', 'Content for doc 1',
-        'hash1', 2, 'finanzas', NOW()
-    ),
-    (
-        'd1111111-1111-1111-1111-111111111112',
-        'a1111111-1111-1111-1111-111111111111'::uuid,
-        'b1111111-1111-1111-1111-111111111111'::uuid,
-        1, 'doc2.md', 'gs://bucket/doc2.md',
-        '{"title":"Doc 2"}', 'Content for doc 2',
-        'hash2', 3, 'comercial', NOW()
-    ),
-    (
-        'd1111111-1111-1111-1111-111111111113',
-        'a1111111-1111-1111-1111-111111111111'::uuid,
-        'b1111111-1111-1111-1111-111111111111'::uuid,
-        1, 'doc3.md', 'gs://bucket/doc3.md',
-        '{"title":"Doc 3"}', 'Content for doc 3',
-        'hash3', 1, 'operaciones', NOW()
-    );
+    ('d1111111-1111-1111-1111-111111111111'::uuid,
+     'a1111111-1111-1111-1111-111111111111'::uuid,
+     'b1111111-1111-1111-1111-111111111111'::uuid,
+     1, 'doc1.md', 'gs://bucket/doc1.md', '{"title":"Doc 1"}', 'Content for doc 1',
+     'hash1', 2, 'finanzas'),
+    ('d1111111-1111-1111-1111-111111111112'::uuid,
+     'a1111111-1111-1111-1111-111111111111'::uuid,
+     'b1111111-1111-1111-1111-111111111111'::uuid,
+     1, 'doc2.md', 'gs://bucket/doc2.md', '{"title":"Doc 2"}', 'Content for doc 2',
+     'hash2', 3, 'comercial'),
+    ('d1111111-1111-1111-1111-111111111113'::uuid,
+     'a1111111-1111-1111-1111-111111111111'::uuid,
+     'b1111111-1111-1111-1111-111111111111'::uuid,
+     1, 'doc3.md', 'gs://bucket/doc3.md', '{"title":"Doc 3"}', 'Content for doc 3',
+     'hash3', 1, 'operaciones');
 
--- === SETUP: Insertar conceptos de partner 2 (para probar partner_portal_read) ===
-SET app.partner_id='a2222222-2222-2222-2222-222222222222';
+-- === SETUP (rol de servicio): concepto de partner 2 ===
 INSERT INTO okf_partner_concepts (
     id, partner_id, package_id, version, path, gcs_path, frontmatter, body_text,
-    content_sha256, altitude, system_slug, updated_at
+    content_sha256, altitude, system_slug
 ) VALUES
-    (
-        'd2222222-2222-2222-2222-222222222222',
-        'a2222222-2222-2222-2222-222222222222'::uuid,
-        'b2222222-2222-2222-2222-222222222222'::uuid,
-        1, 'other.md', 'gs://bucket/other.md',
-        '{"title":"Other"}', 'Content from partner 2',
-        'hash_other', 2, 'finanzas', NOW()
-    );
+    ('d2222222-2222-2222-2222-222222222222'::uuid,
+     'a2222222-2222-2222-2222-222222222222'::uuid,
+     'b2222222-2222-2222-2222-222222222222'::uuid,
+     1, 'other.md', 'gs://bucket/other.md', '{"title":"Other"}', 'Content from partner 2',
+     'hash_other', 2, 'finanzas');
 
--- === SETUP: Licencia activa vigente para t1 (validar case 1) ===
+-- === SETUP (rol de servicio): licencias ===
+-- c1: t1, activa y vigente, systems=[finanzas,comercial], altitude_max=3
+-- c2: t3, status='active' pero valid_until en el PASADO (caso 2: expira por tiempo, sin tocar status)
 INSERT INTO kdb_partner_licenses (
     contract_id, tenant_id, partner_id, package_id, version,
-    systems, altitude_max, modules, valid_from, valid_until, status, synced_at
-) VALUES (
-    'c1111111-1111-1111-1111-111111111111'::uuid,
-    't1',
-    'a1111111-1111-1111-1111-111111111111'::uuid,
-    'b1111111-1111-1111-1111-111111111111'::uuid,
-    1,
-    ARRAY['finanzas','comercial'],
-    3,
-    ARRAY['read','search'],
-    NOW() - INTERVAL '1 day',
-    NOW() + INTERVAL '30 days',
-    'active',
-    NOW()
-);
+    systems, altitude_max, modules, valid_from, valid_until, status
+) VALUES
+    ('c1111111-1111-1111-1111-111111111111'::uuid, 't1',
+     'a1111111-1111-1111-1111-111111111111'::uuid,
+     'b1111111-1111-1111-1111-111111111111'::uuid, 1,
+     ARRAY['finanzas','comercial'], 3, ARRAY['read','search'],
+     NOW() - INTERVAL '1 day', NOW() + INTERVAL '30 days', 'active'),
+    ('c2222222-2222-2222-2222-222222222222'::uuid, 't3',
+     'a1111111-1111-1111-1111-111111111111'::uuid,
+     'b1111111-1111-1111-1111-111111111111'::uuid, 1,
+     ARRAY['finanzas','comercial'], 3, ARRAY['read','search'],
+     NOW() - INTERVAL '60 days', NOW() - INTERVAL '30 days', 'active');
 
--- === SETUP: Licencia con valid_until en el pasado (case 2) ===
-INSERT INTO kdb_partner_licenses (
-    contract_id, tenant_id, partner_id, package_id, version,
-    systems, altitude_max, modules, valid_from, valid_until, status, synced_at
-) VALUES (
-    'c2222222-2222-2222-2222-222222222222'::uuid,
-    't1',
-    'a1111111-1111-1111-1111-111111111111'::uuid,
-    'b1111111-1111-1111-1111-111111111111'::uuid,
-    1,
-    ARRAY['finanzas','comercial'],
-    3,
-    ARRAY['read','search'],
-    NOW() - INTERVAL '60 days',
-    NOW() - INTERVAL '30 days',
-    'active',
-    NOW()
-);
+-- Cambiar al rol de aplicación: a partir de aquí RLS aplica
+SET ROLE app_user;
 
--- === SETUP: Sin licencia para t2 (case 3) ===
--- (No insertar nada para t2)
-
--- === TEST CASE 1: Con app.tenant_id='t1' y licencia activa vigente ===
+-- === CASO 1: t1 con licencia activa vigente ===
+-- Esperado: 2 (doc1 finanzas + doc2 comercial; doc3 operaciones queda fuera de systems)
 SET app.tenant_id='t1';
 SET app.partner_id='';
--- Esperado: 2 filas (doc1.md y doc2.md que tienen system_slug en ['finanzas','comercial'] y altitude <= 3)
--- doc3.md NO debe verse porque su system_slug='operaciones' no está en systems=['finanzas','comercial']
-SELECT COUNT(*) as case1_count FROM okf_partner_concepts
-WHERE partner_id='a1111111-1111-1111-1111-111111111111'::uuid;
+SELECT COUNT(*) as case1_expected_2 FROM okf_partner_concepts;
 
--- === TEST CASE 2: Licencia con valid_until en el pasado (sin cambiar status) ===
--- Misma sesión, mismo tenant, misma query
--- Esperado: 0 filas (la licencia está expirada)
-SELECT COUNT(*) as case2_count FROM okf_partner_concepts
-WHERE partner_id='a1111111-1111-1111-1111-111111111111'::uuid;
+-- === CASO 2: licencia con valid_until en el pasado, status intacto ===
+-- Esperado: 0 (t3 solo tiene la licencia expirada por tiempo)
+SET app.tenant_id='t3';
+SELECT COUNT(*) as case2_expected_0 FROM okf_partner_concepts;
 
--- === TEST CASE 3: app.tenant_id='t2' sin licencia ===
+-- === CASO 3: t2 sin licencia ===
+-- Esperado: 0
 SET app.tenant_id='t2';
--- Esperado: 0 filas (t2 no tiene licencia)
-SELECT COUNT(*) as case3_count FROM okf_partner_concepts;
+SELECT COUNT(*) as case3_expected_0 FROM okf_partner_concepts;
 
--- === TEST CASE 4: app.partner_id del dueño (portal) ===
+-- === CASO 4: partner dueño (portal) ===
+-- Esperado: 3 propias / 0 del otro partner
 SET app.tenant_id='';
 SET app.partner_id='a1111111-1111-1111-1111-111111111111';
--- Esperado: 3 filas (ve todo lo suyo desde partner_portal_read)
-SELECT COUNT(*) as case4_own_count FROM okf_partner_concepts
-WHERE partner_id='a1111111-1111-1111-1111-111111111111'::uuid;
-
--- Mismo partner, diferente partner
--- Esperado: 0 filas (no ve partner 2)
-SELECT COUNT(*) as case4_other_count FROM okf_partner_concepts
+SELECT COUNT(*) as case4_own_expected_3 FROM okf_partner_concepts;
+SELECT COUNT(*) as case4_other_expected_0 FROM okf_partner_concepts
 WHERE partner_id='a2222222-2222-2222-2222-222222222222'::uuid;
 
--- === TEST CASE 5: Concepto con system_slug fuera de l.systems ===
--- Volvemos a t1 pero primero verificamos que doc3 (operaciones) no se ve
+-- === CASO 5: system_slug fuera de license.systems ===
+-- Esperado: 0 (doc3 es 'operaciones', licencia solo cubre finanzas/comercial)
 SET app.tenant_id='t1';
 SET app.partner_id='';
--- doc3 tiene system_slug='operaciones' que NO está en la licencia systems=['finanzas','comercial']
--- Esperado: 0 filas para doc3 específicamente
-SELECT COUNT(*) as case5_outside_systems FROM okf_partner_concepts
-WHERE system_slug='operaciones' AND partner_id='a1111111-1111-1111-1111-111111111111'::uuid;
+SELECT COUNT(*) as case5_expected_0 FROM okf_partner_concepts
+WHERE system_slug='operaciones';
 
--- === TEST: Verificar kdb_partner_licenses RLS ===
--- t1 ve su licencia
+-- === EXTRA: RLS de kdb_partner_licenses ===
+-- t1 ve solo su licencia (1); t2 no ve ninguna (0)
 SET app.tenant_id='t1';
-SELECT COUNT(*) as licenses_t1_count FROM kdb_partner_licenses
-WHERE tenant_id='t1';
-
--- t2 no ve la licencia de t1
+SELECT COUNT(*) as licenses_t1_expected_1 FROM kdb_partner_licenses;
 SET app.tenant_id='t2';
-SELECT COUNT(*) as licenses_t2_count FROM kdb_partner_licenses
-WHERE tenant_id='t1';
+SELECT COUNT(*) as licenses_t2_expected_0 FROM kdb_partner_licenses;
 
--- === ROLLBACK: Limpiar todos los datos de prueba ===
+-- Volver al rol de servicio y revertir todo el seed
+RESET ROLE;
 ROLLBACK;

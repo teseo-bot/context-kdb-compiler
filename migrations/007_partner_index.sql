@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS kdb_partner_licenses (
 );
 CREATE INDEX IF NOT EXISTS kdb_partner_licenses_tenant_idx ON kdb_partner_licenses(tenant_id, status);
 
+-- ENABLE + FORCE: mismo patrón que 004_rls.sql (FORCE aplica RLS también al owner;
+-- el DDL del TRD §5 omitía FORCE — el código canónico es 004).
 ALTER TABLE okf_partner_concepts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE okf_partner_concepts FORCE ROW LEVEL SECURITY;
 ALTER TABLE okf_partner_edges ENABLE ROW LEVEL SECURITY;
@@ -53,17 +55,19 @@ ALTER TABLE okf_partner_edges FORCE ROW LEVEL SECURITY;
 ALTER TABLE kdb_partner_licenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kdb_partner_licenses FORCE ROW LEVEL SECURITY;
 
--- Clean up old policies before creating the unified one
-DROP POLICY IF EXISTS partner_portal_read ON okf_partner_concepts;
-DROP POLICY IF EXISTS licensed_tenant_read ON okf_partner_concepts;
+-- Limpieza de políticas provisionales de versiones previas de esta migración
 DROP POLICY IF EXISTS partner_or_licensed_read ON okf_partner_concepts;
+DROP POLICY IF EXISTS partner_edges_read ON okf_partner_edges;
 
--- Single unified policy for okf_partner_concepts
-CREATE POLICY partner_or_licensed_read ON okf_partner_concepts FOR SELECT USING (
-    -- Partner portal: owner viewing own concepts
-    (partner_id::text = current_setting('app.partner_id', true) AND current_setting('app.partner_id', true) != '')
-    OR
-    -- Tenant with active license
+-- Dos políticas PERMISSIVE sobre okf_partner_concepts: Postgres las combina con OR
+-- (portal del partner dueño O tenant con licencia activa vigente).
+DROP POLICY IF EXISTS partner_portal_read ON okf_partner_concepts;
+CREATE POLICY partner_portal_read ON okf_partner_concepts FOR SELECT USING (
+    partner_id::text = current_setting('app.partner_id', true)
+);
+
+DROP POLICY IF EXISTS licensed_tenant_read ON okf_partner_concepts;
+CREATE POLICY licensed_tenant_read ON okf_partner_concepts FOR SELECT USING (
     EXISTS (
         SELECT 1 FROM kdb_partner_licenses l
         WHERE l.partner_id = okf_partner_concepts.partner_id
@@ -76,13 +80,13 @@ CREATE POLICY partner_or_licensed_read ON okf_partner_concepts FOR SELECT USING 
     )
 );
 
-DROP POLICY IF EXISTS partner_edges_read ON okf_partner_edges;
-CREATE POLICY partner_edges_read ON okf_partner_edges FOR SELECT USING (
-    -- Edges accessible if referenced concept is accessible
-    TRUE
-);
-
 DROP POLICY IF EXISTS licenses_tenant_read ON kdb_partner_licenses;
 CREATE POLICY licenses_tenant_read ON kdb_partner_licenses FOR SELECT USING (
     tenant_id = current_setting('app.tenant_id', true)
 );
+
+-- Nota: escrituras solo rol de servicio del compiler (postgres, superuser/owner) —
+-- sin políticas INSERT/UPDATE, mismo patrón que 004_rls.sql. El patrón de
+-- idempotencia es DROP POLICY IF EXISTS + CREATE POLICY, copiado de 004_rls.sql.
+-- okf_partner_edges queda sin política SELECT: con RLS activo y sin política,
+-- ningún rol de aplicación ve filas (solo el rol de servicio).
