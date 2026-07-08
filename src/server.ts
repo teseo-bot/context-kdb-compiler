@@ -15,6 +15,14 @@ import { validateConcept } from './partners/validator';
 import { createPartnerBundleWithStorage } from './partners/bundle';
 import { ingestPartnerDocument, PartnerIngestInput } from './partners/partner-ingest';
 import { updatePartnerDraft, DraftUpdateInput } from './partners/partner-draft-update';
+import {
+  publishPartnerPackage,
+  PartnerPublishInput,
+  PartnerPublishChainBrokenError,
+  PartnerDraftsNotFoundError,
+  PartnerPublishValidationError,
+  PartnerPublishPartialFailureError,
+} from './partners/publisher';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -472,6 +480,67 @@ app.post('/internal/partner-draft-update', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-draft-update:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W4: ruta M2M interna para publicar una versión firmada de paquete de aliado.
+// Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que /internal/index-delta).
+// Body: {partner_id, partner_slug, package_id, package_slug, version, draft_paths[]} — la
+// identidad (partner/paquete) y la selección de drafts aprobados las decide el panel
+// (teseo-control); este compiler NO adivina ninguna de las dos (resolución de asignación,
+// PLAN-Aliados-Epicas-PA.md PA2-W4).
+// Secuencia: (1) verifyChain() → 409 si rota [INV-3.3]; (2) lee y valida TODOS los drafts
+// (404 si falta alguno; 422 + reports si ∃ error de validación, CERO cambios [INV-3.1]);
+// (3) escribe conceptos + portada del paquete; (4) manifest canónico + firma KMS; (5) índice
+// delta a okf_partner_concepts/okf_partner_edges en una transacción [INV-6.1]. Fallo en los
+// pasos 3-5 → 500 con detalle de qué quedó escrito (sin rollback de GCS, ver src/partners/publisher.ts).
+app.post('/internal/partner-publish', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-publish cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      partner_slug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,39}$/),
+      package_id: z.string().uuid(),
+      package_slug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,59}$/),
+      version: z.number().int().min(1),
+      draft_paths: z.array(z.string().min(1)).min(1),
+    }).parse(rawBody);
+
+    const result = await publishPartnerPackage(input as PartnerPublishInput, {
+      pool: indexerPool,
+      embeddings: indexerEmbeddings,
+    });
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    if (error instanceof PartnerPublishChainBrokenError) {
+      return c.json({ error: error.message }, 409);
+    }
+    if (error instanceof PartnerDraftsNotFoundError) {
+      return c.json({ error: error.message, missing: error.missing }, 404);
+    }
+    if (error instanceof PartnerPublishValidationError) {
+      return c.json({ error: error.message, reports: error.reports }, 422);
+    }
+    if (error instanceof PartnerPublishPartialFailureError) {
+      return c.json({ error: error.message, partial: error.partial }, 500);
+    }
+    console.error('Error in /internal/partner-publish:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
