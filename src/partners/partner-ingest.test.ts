@@ -145,6 +145,69 @@ Este es un documento de prueba sobre cláusulas.`,
   assert.ok(logContent && logContent.length > 0, 'log.md fue creado');
 });
 
+test('KL2-W2: ingesta con source_gcs_object → lee el documento de _fuentes/ y produce draft', async () => {
+  const storage = new InMemoryStorageBackend();
+  const store = new BundleStore({ tenantId: TEST_PARTNER_ID, storage });
+
+  // Simula lo que /internal/partner-source-upload (KL2-W1) ya habría escrito: el objeto en
+  // _fuentes/ contiene el base64 del documento tal cual (ver source-upload.ts).
+  const docText = 'Cláusula de confidencialidad estándar sin datos personales.';
+  const docBase64 = Buffer.from(docText, 'utf8').toString('base64');
+  const sourcePath = '_fuentes/deadbeef.txt';
+  await store.write(sourcePath, docBase64, { actor: 'partner-source-upload-api', accion: 'draft' });
+
+  class MockDistillerLlm {
+    async generate(_prompt: string) {
+      const now = new Date().toISOString().split('.')[0] + 'Z';
+      return JSON.stringify({
+        type: 'Insight',
+        title: 'Cláusula desde fuente',
+        description: 'Concepto extraído de fuente registrada',
+        tags: ['l-legal', 'test'],
+        timestamp: now,
+        sources: ['conv:test-thread-123'],
+        confidence: 'draft',
+        pii: 'clean',
+        altitude: 2,
+        body: docText,
+      });
+    }
+  }
+
+  const result = await ingestPartnerDocument(
+    {
+      partner_id: TEST_PARTNER_ID,
+      package_slug: 'test-contracts',
+      source_gcs_object: sourcePath,
+    },
+    store,
+    { distillerLlm: new MockDistillerLlm() as any, piiLlm: new MockPiiLlm() }
+  );
+
+  assert.equal(result.drafts.length, 1, 'se crea un draft leyendo desde _fuentes/');
+  assert.ok(result.drafts[0].path.startsWith('_staging/'), 'el draft se escribe a _staging/');
+
+  const draftContent = storage.versions.get(result.drafts[0].path);
+  assert.ok(draftContent && draftContent[0].content.includes('Cláusula de confidencialidad'), 'el body proviene del documento leído de _fuentes/');
+});
+
+test('KL2-W2: ingesta con source_gcs_object inexistente → error explícito, cero drafts', async () => {
+  const storage = new InMemoryStorageBackend();
+  const store = new BundleStore({ tenantId: TEST_PARTNER_ID, storage });
+
+  await assert.rejects(
+    ingestPartnerDocument(
+      {
+        partner_id: TEST_PARTNER_ID,
+        package_slug: 'test-contracts',
+        source_gcs_object: '_fuentes/no-existe.pdf',
+      },
+      store
+    ),
+    (error: any) => /no encontrado/.test(error.message)
+  );
+});
+
 test('PA2-W3: draft-update con curator incompleto → 422 y CERO escrituras [INV-2.3]', async () => {
   const storage = new InMemoryStorageBackend();
   const store = new BundleStore({ tenantId: TEST_PARTNER_ID, storage });

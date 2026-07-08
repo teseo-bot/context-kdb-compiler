@@ -10,6 +10,14 @@
  *  3. redactPii (pii-redactor) → marca draft.pii
  *  4. valida contra PartnerConceptFrontmatterSchema (excepto confidence que sigue draft)
  *  5. escribe a _staging/{fecha}/ del bundle del aliado
+ *
+ * KL2-W2: además de `document` (contenido inline), acepta `source_gcs_object` — el path de un
+ * documento YA subido a `_fuentes/` del bundle del aliado vía `/internal/partner-source-upload`
+ * (KL2-W1, `src/partners/source-upload.ts`). Cuando llega `source_gcs_object`, este módulo lee
+ * el objeto server-side (misma `store`, mismo bundle) en vez de requerir que el panel reenvíe
+ * el binario completo. El objeto en `_fuentes/` se escribió con el contenido base64 TAL CUAL
+ * (ver comentario de codificación en `source-upload.ts`), así que se rehidrata como
+ * `document.content_base64` y reusa el decodificador existente sin cambios.
  */
 
 import { z } from 'zod';
@@ -25,11 +33,17 @@ import { ConceptFrontmatterSchema } from '../infrastructure/concept-frontmatter.
 export interface PartnerIngestInput {
   partner_id: string;
   package_slug: string;
-  document: {
+  /** Contenido inline. Mutuamente excluyente con `source_gcs_object` (uno de los dos es
+   * requerido; la validación de "al menos uno" vive en la ruta de server.ts). */
+  document?: {
     filename: string;
     content_base64?: string;
     text?: string;
   };
+  /** KL2-W2: path de un documento ya subido a `_fuentes/` del bundle del aliado (devuelto por
+   * `/internal/partner-source-upload`, KL2-W1). Si se provee, se ignora `document` y se lee el
+   * objeto server-side. */
+  source_gcs_object?: string;
 }
 
 export interface DraftOutput {
@@ -57,6 +71,33 @@ function decodeDocumentContent(doc: { content_base64?: string; text?: string }):
   throw new Error('Document must have content_base64 or text');
 }
 
+function basenameOf(path: string): string {
+  return path.split('/').pop() ?? path;
+}
+
+/**
+ * KL2-W2: resuelve el `document` efectivo a partir de `input.document` o, si viene
+ * `source_gcs_object`, leyendo el objeto de `_fuentes/` server-side. El objeto se escribió
+ * (KL2-W1) con el contenido base64 sin decodificar, así que se rehidrata tal cual como
+ * `content_base64`.
+ */
+async function resolveDocument(
+  input: PartnerIngestInput,
+  store: BundleStore
+): Promise<{ filename: string; content_base64?: string; text?: string }> {
+  if (input.source_gcs_object) {
+    const stored = await store.read(input.source_gcs_object);
+    if (!stored) {
+      throw new Error(`source_gcs_object no encontrado en el bundle: ${input.source_gcs_object}`);
+    }
+    return { filename: basenameOf(input.source_gcs_object), content_base64: stored.content };
+  }
+  if (input.document) {
+    return input.document;
+  }
+  throw new Error('PartnerIngestInput debe traer document o source_gcs_object');
+}
+
 /**
  * Orquesta el pipeline V2 para ingesta modo partner
  *
@@ -73,13 +114,16 @@ export async function ingestPartnerDocument(
     piiLlm?: PiiLlm;
   }
 ): Promise<PartnerIngestResult> {
+  // KL2-W2: resuelve document inline o desde `_fuentes/` (source_gcs_object)
+  const document = await resolveDocument(input, store);
+
   // Decodificar contenido
-  const rawContent = decodeDocumentContent(input.document);
+  const rawContent = decodeDocumentContent(document);
 
   // Paso 1: Distiller (V2) — transforma a un concepto OKF
   const candidate: DistillCandidateInput = {
     kind: 'api',
-    source_ref: `partner-ingest:${input.partner_id}/${input.package_slug}/${input.document.filename}`,
+    source_ref: `partner-ingest:${input.partner_id}/${input.package_slug}/${document.filename}`,
     payload_summary: rawContent.slice(0, 500),
   };
 

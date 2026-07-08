@@ -14,6 +14,7 @@ import { indexDelta } from './indexing/indexer';
 import { validateConcept } from './partners/validator';
 import { createPartnerBundleWithStorage } from './partners/bundle';
 import { ingestPartnerDocument, PartnerIngestInput } from './partners/partner-ingest';
+import { uploadPartnerSource, PartnerSourceTooLargeError } from './partners/source-upload';
 import { updatePartnerDraft, DraftUpdateInput } from './partners/partner-draft-update';
 import {
   publishPartnerPackage,
@@ -395,6 +396,9 @@ app.post('/internal/partner-bundle-create', async (c) => {
 // PA2-W3: ruta M2M interna para ingerir documento de aliado
 // Auth: header `x-api-key` === process.env.M2M_API_KEY
 // Body: {partner_id, package_slug, document: {filename, content_base64 | text}}
+//    o: {partner_id, package_slug, source_gcs_object} (KL2-W2 — lee el documento ya subido a
+//       `_fuentes/` vía /internal/partner-source-upload en vez de requerir que el panel
+//       reenvíe el binario completo; ver src/partners/partner-ingest.ts::resolveDocument)
 // Pipeline: distiller-v2 → router HOCFLIT → pii-redactor → draft a _staging/
 app.post('/internal/partner-ingest', async (c) => {
   const M2M_API_KEY = process.env.M2M_API_KEY;
@@ -417,7 +421,10 @@ app.post('/internal/partner-ingest', async (c) => {
         filename: z.string().min(1),
         content_base64: z.string().optional(),
         text: z.string().optional(),
-      }),
+      }).optional(),
+      source_gcs_object: z.string().min(1).optional(),
+    }).refine((v) => v.document || v.source_gcs_object, {
+      message: 'Debe traer document o source_gcs_object',
     }).parse(rawBody);
 
     const store = new BundleStore({
@@ -432,6 +439,57 @@ app.post('/internal/partner-ingest', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-ingest:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL2-W1 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.2/§3.3): ruta M2M interna
+// para subir una fuente cruda del aliado a `_fuentes/` del bundle. Espeja la mecánica raw que
+// usa el génesis del bundle (partners/bundle.ts::writePartnerBundle) para escribir
+// `_staging/.keep`: escribe vía BundleStore.write() en un path que NO termina en `.md`, por lo
+// que la validación de frontmatter no se dispara; la entrada SÍ queda en el hash-chain de
+// log.md (misma vía única de escritura). Ver src/partners/source-upload.ts para el detalle de
+// codificación (el contenido se guarda como el base64 recibido, no como bytes binarios).
+// Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que /internal/*).
+// Body: {partner_id, filename, content_base64}
+app.post('/internal/partner-source-upload', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-source-upload cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      filename: z.string().min(1),
+      content_base64: z.string().min(1),
+    }).parse(rawBody);
+
+    const store = new BundleStore({
+      tenantId: input.partner_id,
+    });
+
+    const result = await uploadPartnerSource(
+      { partner_id: input.partner_id, filename: input.filename, content_base64: input.content_base64 },
+      store
+    );
+
+    return c.json({ sha256: result.sha256, gcs_object: result.gcs_object }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    if (error instanceof PartnerSourceTooLargeError) {
+      return c.json({ error: error.message }, 413);
+    }
+    console.error('Error in /internal/partner-source-upload:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
