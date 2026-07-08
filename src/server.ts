@@ -11,8 +11,9 @@ import { BundleStore } from './infrastructure/bundle-store';
 import { EmbeddingsClient, GeminiEmbeddingsClient } from './infrastructure/embeddings';
 import { MockEmbeddingsClient } from './infrastructure/embeddings.mock';
 import { indexDelta } from './indexing/indexer';
+import { validateConcept } from './partners/validator';
 
-const app = new Hono();
+export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
 const distiller = new DocumentDistiller();
 
@@ -270,6 +271,80 @@ app.post('/internal/index-delta', async (c) => {
   }
 });
 
+// KL0-W3 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.3): ruta M2M de
+// validación OKF de 3 niveles para el Knowledge Lab de aliados. PURA: solo lee (a lo sumo un
+// SELECT sobre okf_partner_concepts para resolver packagePaths); cero escrituras a bundle,
+// índice o BD ([INV-KL5]). Mismo patrón de auth `x-api-key === M2M_API_KEY` que
+// /internal/index-delta. La misma librería (src/partners/validator.ts) validará en el editor
+// (vía panel) y en el gate del publisher cuando exista ([INV-KL1]).
+app.post('/internal/partner-validate', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-validate cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const body = z.object({
+      markdown: z.string().min(1),
+      partner_id: z.string().uuid(),
+      package_slug: z.string().optional(),
+      for_publish: z.boolean().optional(),
+      package_paths: z.array(z.string()).optional(),
+    }).parse(rawBody);
+
+    let packagePaths = body.package_paths;
+
+    if (!packagePaths && body.package_slug) {
+      // KL0-W3 — CONTRADICCIÓN DETECTADA CON EL CÓDIGO REAL (reportada, no improvisada):
+      // migrations/007_partner_index.sql define okf_partner_concepts con columna `package_id`
+      // (UUID), SIN columna `package_slug`. No existe en este repo (ni en ningún otro accesible
+      // desde el Cold-Tier del compiler) una tabla que resuelva partner_id + package_slug →
+      // package_id; ese mapeo, de existir, vive en el plano de control `teseo-control`
+      // (multitenant-admin-panel, otra base de datos por completo — ADR-206), al que este
+      // servicio no está conectado. Para no inventar un join inexistente: `package_slug` solo
+      // se acepta aquí si es literalmente un UUID (se interpreta como `package_id`); si no lo
+      // es, se responde 501 explícito en vez de adivinar. Ver el reporte de la WU KL0-W3 para
+      // decidir el mapeo real (candidato: exponer package_id además de/en vez de package_slug
+      // desde el panel, que sí conoce el plano de control).
+      const packageIdCandidate = z.string().uuid().safeParse(body.package_slug);
+      if (!packageIdCandidate.success) {
+        return c.json({
+          error: 'Not Implemented',
+          details:
+            'package_slug no resuelve a package_id: okf_partner_concepts (migrations/007) no tiene columna package_slug y no hay mapeo slug→id accesible desde este servicio. Pasa package_paths explícitamente, o un package_slug que sea el UUID de package_id.',
+        }, 501);
+      }
+
+      const { rows } = await indexerPool.query(
+        'SELECT DISTINCT path FROM okf_partner_concepts WHERE partner_id = $1 AND package_id = $2',
+        [body.partner_id, packageIdCandidate.data]
+      );
+      packagePaths = rows.map((r: { path: string }) => r.path);
+    }
+
+    const report = validateConcept(body.markdown, {
+      level: 'n3',
+      packagePaths,
+      forPublish: body.for_publish,
+    });
+
+    return c.json(report, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-validate:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
 // K0-W1 (F-H3): validación de credencial de embeddings al arranque.
 // Ya no existe fallback a mock en runtime: sin credencial, compile() falla en la primera llamada.
 const GEMINI_KEY = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0];
@@ -344,11 +419,16 @@ app.post('/ingest/telegram', async (c) => {
 
 const port = parseInt(process.env.PORT || '8080', 10);
 
-console.log(`Starting server on port ${port}...`);
-serve({
-  fetch: app.fetch,
-  port
-});
+// KL0-W3: guard NODE_ENV==='test' (mismo patrón que embeddings/CompilerEngine en este mismo
+// archivo) — permite importar `app` en tests (ej. server.test.ts) sin levantar un listener TCP
+// real, que antes era un efecto secundario incondicional al importar este módulo.
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`Starting server on port ${port}...`);
+  serve({
+    fetch: app.fetch,
+    port
+  });
+}
 
 // --- E11-H3/H4: Conceptual Database/Engine Changes for tenant_id and ingest_jobs ---
 // The following additions are conceptual and represent what would be needed in CompilerEngine
