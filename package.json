@@ -20,6 +20,7 @@
     "typescript": "^6.0.2"
   },
   "dependencies": {
+    "@google-cloud/kms": "^5.5.1",
     "@google-cloud/storage": "^7.19.0",
     "@google/genai": "^1.50.1",
     "@hono/node-server": "^1.19.14",
