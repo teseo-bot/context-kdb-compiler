@@ -12,6 +12,7 @@ import { EmbeddingsClient, GeminiEmbeddingsClient } from './infrastructure/embed
 import { MockEmbeddingsClient } from './infrastructure/embeddings.mock';
 import { indexDelta } from './indexing/indexer';
 import { validateConcept } from './partners/validator';
+import { createPartnerBundleWithStorage } from './partners/bundle';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -341,6 +342,42 @@ app.post('/internal/partner-validate', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-validate:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W1: ruta M2M interna para crear bundle de aliado
+// Auth: header `x-api-key` === process.env.M2M_API_KEY
+// Body: {partner_id}
+app.post('/internal/partner-bundle-create', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-bundle-create cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const { partner_id } = z.object({ partner_id: z.string().uuid() }).parse(rawBody);
+
+    const result = await createPartnerBundleWithStorage(partner_id);
+
+    return c.json({
+      partner_id,
+      bucket_name: `${process.env.GCS_PARTNER_BUNDLE_PREFIX ?? 'kdb-partner-'}${partner_id}`,
+      files_created: result.fileCount,
+      verified: result.verified,
+    }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-bundle-create:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
