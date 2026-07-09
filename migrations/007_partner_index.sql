@@ -42,9 +42,23 @@ CREATE TABLE IF NOT EXISTS kdb_partner_licenses (
     valid_from TIMESTAMPTZ NOT NULL,
     valid_until TIMESTAMPTZ NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active','suspended','terminated','expired')),
+    -- PA5-W2 (TRD §8): datos de presentación y navegación para el browse `_aliados/` del
+    -- orquestador, que solo lee el Cold-Tier. Poblados por el license-sync desde el plano de
+    -- control (partners.slug/legal_name, partner_packages.slug/title). NULLABLE: si faltan,
+    -- el browse cae al identificador disponible.
+    partner_slug TEXT,
+    partner_legal_name TEXT,
+    package_slug TEXT,
+    package_title TEXT,
     synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS kdb_partner_licenses_tenant_idx ON kdb_partner_licenses(tenant_id, status);
+-- Idempotencia para instancias donde la tabla ya existía antes de PA5-W2 (CREATE ... IF NOT EXISTS
+-- no añade columnas a una tabla ya creada — p.ej. pg local o un Cold-Tier con el 007 previo aplicado).
+ALTER TABLE kdb_partner_licenses ADD COLUMN IF NOT EXISTS partner_slug TEXT;
+ALTER TABLE kdb_partner_licenses ADD COLUMN IF NOT EXISTS partner_legal_name TEXT;
+ALTER TABLE kdb_partner_licenses ADD COLUMN IF NOT EXISTS package_slug TEXT;
+ALTER TABLE kdb_partner_licenses ADD COLUMN IF NOT EXISTS package_title TEXT;
 
 -- ENABLE + FORCE: mismo patrón que 004_rls.sql (FORCE aplica RLS también al owner;
 -- el DDL del TRD §5 omitía FORCE — el código canónico es 004).

@@ -191,12 +191,19 @@ test('PA7-W1: runSeed publica los 12 conceptos demo por el pipeline real (bundle
 
   // Aceptación 4: 1 fila en kdb_partner_licenses con status='active' y valid_until ~ now+90d.
   const licenses = await pool.query(
-    'SELECT status, tenant_id, valid_from, valid_until FROM kdb_partner_licenses WHERE contract_id = $1',
+    'SELECT status, tenant_id, modules, partner_slug, partner_legal_name, package_slug, package_title, valid_from, valid_until FROM kdb_partner_licenses WHERE contract_id = $1',
     [DEMO_CONTRACT_ID]
   );
   assert.equal(licenses.rows.length, 1, '1 fila en kdb_partner_licenses para el contrato demo');
   assert.equal(licenses.rows[0].status, 'active');
   assert.equal(licenses.rows[0].tenant_id, DEMO_TENANT_ID);
+  // PA5-W2: módulo consumible (el agente 'compliance' consume el paquete legal) +
+  // slugs/nombres de presentación y navegación para el browse `_aliados/` del orquestador.
+  assert.deepEqual(licenses.rows[0].modules, ['compliance']);
+  assert.equal(licenses.rows[0].partner_slug, 'bufete-demo');
+  assert.equal(licenses.rows[0].partner_legal_name, 'Bufete Demo & Asociados');
+  assert.equal(licenses.rows[0].package_slug, 'legal-esencial');
+  assert.equal(licenses.rows[0].package_title, 'Legal Esencial');
 
   const validFrom = new Date(licenses.rows[0].valid_from).getTime();
   const validUntil = new Date(licenses.rows[0].valid_until).getTime();

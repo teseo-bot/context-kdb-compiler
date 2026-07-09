@@ -245,20 +245,24 @@ export async function runSeed(deps: SeedPartnerDemoDeps): Promise<SeedPartnerDem
   await deps.pool.query(
     `INSERT INTO kdb_partner_licenses
        (contract_id, tenant_id, partner_id, package_id, version, systems, altitude_max, modules,
-        valid_from, valid_until, status, synced_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active', CURRENT_TIMESTAMP)
+        valid_from, valid_until, status, partner_slug, partner_legal_name, package_slug, package_title, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',$11,$12,$13,$14, CURRENT_TIMESTAMP)
      ON CONFLICT (contract_id) DO UPDATE SET
-       tenant_id     = EXCLUDED.tenant_id,
-       partner_id    = EXCLUDED.partner_id,
-       package_id    = EXCLUDED.package_id,
-       version       = EXCLUDED.version,
-       systems       = EXCLUDED.systems,
-       altitude_max  = EXCLUDED.altitude_max,
-       modules       = EXCLUDED.modules,
-       valid_from    = EXCLUDED.valid_from,
-       valid_until   = EXCLUDED.valid_until,
-       status        = 'active',
-       synced_at     = CURRENT_TIMESTAMP`,
+       tenant_id          = EXCLUDED.tenant_id,
+       partner_id         = EXCLUDED.partner_id,
+       package_id         = EXCLUDED.package_id,
+       version            = EXCLUDED.version,
+       systems            = EXCLUDED.systems,
+       altitude_max       = EXCLUDED.altitude_max,
+       modules            = EXCLUDED.modules,
+       valid_from         = EXCLUDED.valid_from,
+       valid_until        = EXCLUDED.valid_until,
+       status             = 'active',
+       partner_slug       = EXCLUDED.partner_slug,
+       partner_legal_name = EXCLUDED.partner_legal_name,
+       package_slug       = EXCLUDED.package_slug,
+       package_title      = EXCLUDED.package_title,
+       synced_at          = CURRENT_TIMESTAMP`,
     [
       DEMO_CONTRACT_ID,
       DEMO_TENANT_ID,
@@ -267,9 +271,16 @@ export async function runSeed(deps: SeedPartnerDemoDeps): Promise<SeedPartnerDem
       DEMO_VERSION,
       ['l-legal'],
       5,
-      ['legal'],
+      // PA5-W2 fix: el paquete legal lo consume el agente 'compliance'
+      // (AGENT_ROLE_MODULE.compliance='compliance'). El módulo 'legal' previo no tenía
+      // ningún rol mapeado → la semilla era inconsumible por kdb_search.
+      ['compliance'],
       validFrom.toISOString(),
       validUntil.toISOString(),
+      fixtures.partner.slug,
+      fixtures.partner.legal_name,
+      fixtures.package.slug,
+      fixtures.package.title,
     ]
   );
 
