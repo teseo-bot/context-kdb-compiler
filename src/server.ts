@@ -25,6 +25,7 @@ import {
   PartnerPublishValidationError,
   PartnerPublishPartialFailureError,
 } from './partners/publisher';
+import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -620,6 +621,70 @@ app.post('/internal/partner-draft-get', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-draft-get:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W2 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.3): asistente IA del
+// Knowledge Lab de aliados — 3 modos (draft_from_source/reorganize/fix_findings). Auth: header
+// `x-api-key` === process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*).
+// Guardrails obligatorios ([INV-KL3]/[INV-KL4]/[INV-KL6], RP-KL4/RP-KL8): ver cabecera de
+// src/partners/partner-assist.ts. Cero escrituras — la salida SIEMPRE se revalida
+// (validateConcept level 'n3') y se devuelve {markdown, report, stripped_refs}, nunca persiste.
+const PartnerAssistFindingSchema = z.object({
+  rule_id: z.string(),
+  level: z.enum(['n1', 'n2', 'n3']).optional(),
+  severity: z.enum(['error', 'warn']).optional(),
+  message_es: z.string(),
+  line: z.number().optional(),
+  fix: z.object({
+    kind: z.enum(['set_field', 'replace_text']),
+    description_es: z.string(),
+    value: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+  }).optional(),
+});
+
+app.post('/internal/partner-assist', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-assist cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      mode: z.enum(['draft_from_source', 'reorganize', 'fix_findings']),
+      partner_id: z.string().uuid(),
+      markdown: z.string().min(1).optional(),
+      source_gcs_objects: z.array(z.string().min(1)).optional(),
+      findings: z.array(PartnerAssistFindingSchema).optional(),
+      concept_type: z.string().optional(),
+      system: z.string().optional(),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await runPartnerAssist(input as PartnerAssistInput, store);
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof PartnerAssistInputError) {
+      return c.json({ error: error.message }, 422);
+    }
+    if (error instanceof PartnerAssistLlmError) {
+      return c.json({ error: error.message }, 502);
+    }
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-assist:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
