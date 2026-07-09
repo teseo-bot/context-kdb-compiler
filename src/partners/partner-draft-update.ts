@@ -24,8 +24,11 @@ export interface DraftUpdateInput {
 /**
  * Valida que draft_path esté bajo _staging/ del bundle del aliado
  * Rechaza: "../", rutas absolutas "paquetes/...", etc.
+ *
+ * KL3-W1: exportado para que `partner-drafts-list.ts` (partner-draft-get) reúse el MISMO guard
+ * anti-traversal en vez de duplicarlo (instrucción explícita de la WU).
  */
-function validateDraftPath(draftPath: string): { valid: boolean; reason?: string } {
+export function validateDraftPath(draftPath: string): { valid: boolean; reason?: string } {
   if (!draftPath.startsWith('_staging/')) {
     return { valid: false, reason: 'Draft path must be under _staging/ directory' };
   }

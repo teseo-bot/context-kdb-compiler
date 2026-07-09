@@ -16,6 +16,7 @@ import { createPartnerBundleWithStorage } from './partners/bundle';
 import { ingestPartnerDocument, PartnerIngestInput } from './partners/partner-ingest';
 import { uploadPartnerSource, PartnerSourceTooLargeError } from './partners/source-upload';
 import { updatePartnerDraft, DraftUpdateInput } from './partners/partner-draft-update';
+import { listPartnerDrafts, getPartnerDraft, PartnerDraftsListInput, PartnerDraftGetInput } from './partners/partner-drafts-list';
 import {
   publishPartnerPackage,
   PartnerPublishInput,
@@ -538,6 +539,87 @@ app.post('/internal/partner-draft-update', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-draft-update:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W1 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §4 P-KL3): ruta M2M interna
+// de listado de drafts de aliado para el editor guiado. Auth: header `x-api-key` ===
+// process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*). Body:
+// {partner_id, package_slug?}. PURA: solo lee GCS (BundleStore.list/read) y, a lo sumo, un
+// SELECT sobre okf_partner_concepts para el filtro de publicados — cero escrituras.
+// Ver src/partners/partner-drafts-list.ts (cabecera) para el criterio exacto de exclusión de
+// drafts ya publicados (resolución as-built PA2-W4: _staging/ es append-only).
+app.post('/internal/partner-drafts-list', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-drafts-list cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      package_slug: z.string().min(1).optional(),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await listPartnerDrafts(input as PartnerDraftsListInput, store, indexerPool);
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-drafts-list:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W1: ruta M2M interna de lectura de un draft de aliado (markdown crudo para el editor).
+// Auth: header `x-api-key` === process.env.M2M_API_KEY. Body: {partner_id, draft_path}.
+// Reúsa el guard anti-traversal de /internal/partner-draft-update (validateDraftPath): 422 si
+// draft_path no está bajo _staging/. Cero escrituras.
+app.post('/internal/partner-draft-get', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-draft-get cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      draft_path: z.string().min(1),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await getPartnerDraft(input as PartnerDraftGetInput, store);
+
+    return c.json(result, 200);
+  } catch (error: any) {
+    if (error?.code === 422) {
+      return c.json({ error: error.message }, 422);
+    }
+    if (error?.code === 404) {
+      return c.json({ error: error.message }, 404);
+    }
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-draft-get:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
