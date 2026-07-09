@@ -26,6 +26,7 @@ import {
   PartnerPublishPartialFailureError,
 } from './partners/publisher';
 import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
+import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -746,6 +747,56 @@ app.post('/internal/partner-publish', async (c) => {
       return c.json({ error: error.message, partial: error.partial }, 500);
     }
     console.error('Error in /internal/partner-publish:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA4-W3a: ruta M2M de sync de licencias — el panel (teseo-control) proyecta un contrato de
+// aliado a una fila de kdb_partner_licenses y llama aquí para reflejarla. Auth: header
+// `x-api-key` === process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*).
+// action='upsert' → upsertLicense (INSERT ... ON CONFLICT (contract_id) DO UPDATE);
+// action='delete' → deleteLicense (DELETE por contract_id).
+app.post('/internal/partner-license-sync', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-license-sync cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = PartnerLicenseSyncInputSchema.parse(rawBody);
+
+    if (input.action === 'upsert') {
+      const license = input.license!;
+      await upsertLicense(indexerPool, {
+        contract_id: input.contract_id,
+        tenant_id: license.tenant_id,
+        partner_id: license.partner_id,
+        package_id: license.package_id,
+        version: license.version,
+        systems: license.systems,
+        altitude_max: license.altitude_max,
+        modules: license.modules,
+        valid_from: license.valid_from,
+        valid_until: license.valid_until,
+        status: license.status,
+      });
+    } else {
+      await deleteLicense(indexerPool, input.contract_id);
+    }
+
+    return c.json({ ok: true, action: input.action }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-license-sync:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
