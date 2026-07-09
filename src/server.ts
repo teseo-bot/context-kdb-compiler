@@ -786,6 +786,10 @@ app.post('/internal/partner-license-sync', async (c) => {
         valid_from: license.valid_from,
         valid_until: license.valid_until,
         status: license.status,
+        partner_slug: license.partner_slug,
+        partner_legal_name: license.partner_legal_name,
+        package_slug: license.package_slug,
+        package_title: license.package_title,
       });
     } else {
       await deleteLicense(indexerPool, input.contract_id);

@@ -24,6 +24,10 @@ export interface PartnerLicenseRow {
   valid_from: string;
   valid_until: string;
   status: 'active' | 'suspended' | 'terminated' | 'expired';
+  partner_slug?: string | null;
+  partner_legal_name?: string | null;
+  package_slug?: string | null;
+  package_title?: string | null;
 }
 
 /**
@@ -34,8 +38,8 @@ export interface PartnerLicenseRow {
 export async function upsertLicense(pool: Pool, row: PartnerLicenseRow): Promise<void> {
   await pool.query(
     `INSERT INTO kdb_partner_licenses
-       (contract_id, tenant_id, partner_id, package_id, version, systems, altitude_max, modules, valid_from, valid_until, status, synced_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+       (contract_id, tenant_id, partner_id, package_id, version, systems, altitude_max, modules, valid_from, valid_until, status, partner_slug, partner_legal_name, package_slug, package_title, synced_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
      ON CONFLICT (contract_id) DO UPDATE SET
        tenant_id = EXCLUDED.tenant_id,
        partner_id = EXCLUDED.partner_id,
@@ -47,6 +51,10 @@ export async function upsertLicense(pool: Pool, row: PartnerLicenseRow): Promise
        valid_from = EXCLUDED.valid_from,
        valid_until = EXCLUDED.valid_until,
        status = EXCLUDED.status,
+       partner_slug = EXCLUDED.partner_slug,
+       partner_legal_name = EXCLUDED.partner_legal_name,
+       package_slug = EXCLUDED.package_slug,
+       package_title = EXCLUDED.package_title,
        synced_at = now()`,
     [
       row.contract_id,
@@ -60,6 +68,10 @@ export async function upsertLicense(pool: Pool, row: PartnerLicenseRow): Promise
       row.valid_from,
       row.valid_until,
       row.status,
+      row.partner_slug ?? null,
+      row.partner_legal_name ?? null,
+      row.package_slug ?? null,
+      row.package_title ?? null,
     ]
   );
 }
@@ -80,6 +92,10 @@ const PartnerLicenseSchema = z.object({
   valid_from: z.string().datetime(),
   valid_until: z.string().datetime(),
   status: z.enum(['active', 'suspended', 'terminated', 'expired']),
+  partner_slug: z.string().min(1).optional().nullable(),
+  partner_legal_name: z.string().min(1).optional().nullable(),
+  package_slug: z.string().min(1).optional().nullable(),
+  package_title: z.string().min(1).optional().nullable(),
 });
 
 /**

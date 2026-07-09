@@ -131,3 +131,26 @@ test('PartnerLicenseSyncInputSchema: upsert con license completo y válido → p
   });
   assert.equal(result.success, true, 'debe pasar con license completo y válido');
 });
+
+test('PartnerLicenseSyncInputSchema: upsert con los 4 campos nuevos (partner_slug, partner_legal_name, package_slug, package_title) → pasa', () => {
+  const result = PartnerLicenseSyncInputSchema.safeParse({
+    action: 'upsert',
+    contract_id: TEST_CONTRACT_ID,
+    license: baseRow({
+      partner_slug: 'partner-slug-test',
+      partner_legal_name: 'Partner Legal Name Test',
+      package_slug: 'package-slug-test',
+      package_title: 'Package Title Test',
+    }),
+  });
+  assert.equal(result.success, true, 'debe pasar con los 4 campos nuevos rellenos');
+});
+
+test('PartnerLicenseSyncInputSchema: upsert sin los 4 campos nuevos (son opcionales) → pasa', () => {
+  const result = PartnerLicenseSyncInputSchema.safeParse({
+    action: 'upsert',
+    contract_id: TEST_CONTRACT_ID,
+    license: baseRow(),
+  });
+  assert.equal(result.success, true, 'debe pasar sin los 4 campos nuevos (son opcionales)');
+});
