@@ -304,7 +304,7 @@ export async function runSeed(deps: SeedPartnerDemoDeps): Promise<SeedPartnerDem
  * `scripts/create-partner-bundle.ts` (GcsRealBackendPartner), sin precondición de versioning
  * en bucket (la creación del bucket se maneja aparte, ver `ensureBucket` abajo).
  */
-class GcsRealBackend implements BundleStorageBackend {
+export class GcsRealBackend implements BundleStorageBackend {
   private storage: Storage;
   private bucketName: string;
 
