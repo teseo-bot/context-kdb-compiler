@@ -27,6 +27,7 @@ import {
 } from './partners/publisher';
 import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
 import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
+import { getPartnerPackageEvalStatus } from './partners/partner-eval-status';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -801,6 +802,44 @@ app.post('/internal/partner-license-sync', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/partner-license-sync:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA7-W2: ruta M2M interna de estado del gate de eval de paquete — el panel (teseo-control) la
+// llama antes de activar el PRIMER contrato de un paquete de aliado, NUNCA consulta el Cold-Tier
+// directo. Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que
+// /internal/partner-license-sync). Query params: package_id, partner_id (ambos UUID).
+app.get('/internal/partner-package-eval-status', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-package-eval-status cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const query = z
+      .object({
+        package_id: z.string().uuid(),
+        partner_id: z.string().uuid(),
+      })
+      .parse({
+        package_id: c.req.query('package_id'),
+        partner_id: c.req.query('partner_id'),
+      });
+
+    const status = await getPartnerPackageEvalStatus(indexerPool, query.package_id, query.partner_id);
+    return c.json(status, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-package-eval-status:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
