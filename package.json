@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "NODE_ENV=test tsx --test \"src/**/*.test.ts\"",
     "build": "tsc",
     "start": "node dist/server.js",
     "v2": "tsx src/ingestion/candidate-poller.ts"
