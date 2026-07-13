@@ -51,7 +51,6 @@ export async function createPartnerBundleWithStorage(
     throw new Error(`Partner ID inválido: '${partnerId}' debe ser UUID`);
   }
 
-  const bucketName = `${process.env.GCS_PARTNER_BUNDLE_PREFIX ?? 'kdb-partner-'}${partnerId}`;
   const backend = storage || ((): any => {
     throw new Error('Storage backend is required when not using GCS');
   })();

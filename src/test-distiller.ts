@@ -1,5 +1,4 @@
 import { DocumentDistiller } from './ingestion/distiller';
-import * as fs from 'fs/promises';
 
 async function runTest() {
   const distiller = new DocumentDistiller();

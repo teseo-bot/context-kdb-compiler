@@ -20,14 +20,12 @@
  * `document.content_base64` y reusa el decodificador existente sin cambios.
  */
 
-import { z } from 'zod';
 import * as yaml from 'js-yaml';
 import { BundleStore } from '../infrastructure/bundle-store';
 import { distillCandidate, DistillerLlm, DistillCandidateInput } from '../ingestion/distiller-v2';
 import { buildTargetPath } from '../ingestion/hocflit-router';
 import { redactPii, PiiLlm } from '../ingestion/pii-redactor';
 import { HocflitHint } from '../schemas/contracts';
-import { PartnerConceptFrontmatterSchema } from './partners-mirror.schema';
 import { ConceptFrontmatterSchema } from '../infrastructure/concept-frontmatter.schema';
 
 export interface PartnerIngestInput {

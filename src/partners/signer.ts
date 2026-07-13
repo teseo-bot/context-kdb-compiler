@@ -4,7 +4,6 @@
  */
 
 import { createHash, createVerify } from 'node:crypto';
-import * as crypto from 'node:crypto';
 import { KeyManagementServiceClient } from '@google-cloud/kms';
 
 /**
