@@ -50,8 +50,9 @@ class DocumentDistiller {
                 await parser.destroy();
             }
         }
-        else if (mimeType === 'text/plain') {
-            // Validate/read TXT as UTF-8
+        else if (mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType === 'text/csv') {
+            // K9-W1 (SPEC-K9 §2.5): text/markdown y text/csv se tratan como texto plano UTF-8,
+            // igual que text/plain (sin dependencias nuevas).
             rawText = buffer.toString('utf-8');
         }
         else if (mediaTypes.includes(mimeType)) {

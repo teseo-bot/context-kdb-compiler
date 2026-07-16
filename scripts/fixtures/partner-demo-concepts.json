@@ -1,0 +1,223 @@
+{
+  "_comment": "PA7-W1: fixtures sintéticos del aliado demo 'Bufete Demo & Asociados'. 12 conceptos l-legal, en español, verosímiles pero ficticios. Consumidos por scripts/seed-partner-demo.ts (stub determinista de distiller-v2) para sembrar okf_partner_concepts pasando por el pipeline real (bundle -> ingest -> curar -> publish -> contrato). Los slugs deben coincidir EXACTAMENTE con slugify(title) de src/ingestion/hocflit-router.ts, porque los cross-links del body referencian esos slugs.",
+  "partner": {
+    "id": "00000000-0000-4000-8000-00000000d001",
+    "slug": "bufete-demo",
+    "legal_name": "Bufete Demo & Asociados"
+  },
+  "package": {
+    "id": "00000000-0000-4000-8000-00000000d002",
+    "slug": "legal-esencial",
+    "title": "Legal Esencial"
+  },
+  "curator": {
+    "legal_name": "Bufete Demo & Asociados",
+    "responsible": "Mariana Duarte Ibarra"
+  },
+  "concepts": [
+    {
+      "slug": "clausula-de-limitacion-de-responsabilidad",
+      "type": "Proceso",
+      "title": "Cláusula de Limitación de Responsabilidad",
+      "description": "Modelo de cláusula que acota el monto y los supuestos de responsabilidad contractual del prestador de servicios frente al cliente.",
+      "tags": [
+        "l-legal",
+        "contratos",
+        "clausulas"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-01"
+      ],
+      "altitude": 2,
+      "body": "## Objetivo\n\nEsta cláusula limita el monto máximo de responsabilidad del prestador de servicios frente al cliente por daños derivados del incumplimiento del contrato, excluyendo dolo o negligencia grave.\n\n## Texto sugerido\n\n\"La responsabilidad total del PRESTADOR frente al CLIENTE por cualquier reclamación derivada del presente contrato no excederá, en ningún caso, el monto total efectivamente pagado por el CLIENTE durante los doce (12) meses previos al hecho que origina la reclamación. Quedan excluidos de este límite los daños causados por dolo o negligencia grave, así como el incumplimiento de las obligaciones de confidencialidad pactadas (ver [Cláusula de Confidencialidad](/clausula-de-confidencialidad.md)).\"\n\n## Consideraciones de uso\n\n- Verificar que el tope económico sea razonable frente al valor del contrato.\n- No es aplicable a contratos de consumo regulados por la Ley Federal de Protección al Consumidor.\n- Revisar anualmente el monto de referencia con el área de finanzas del cliente."
+    },
+    {
+      "slug": "clausula-de-confidencialidad",
+      "type": "Proceso",
+      "title": "Cláusula de Confidencialidad",
+      "description": "Modelo estándar de cláusula de confidencialidad bilateral para contratos mercantiles del despacho.",
+      "tags": [
+        "l-legal",
+        "contratos",
+        "clausulas"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-02"
+      ],
+      "altitude": 2,
+      "body": "## Objetivo\n\nProteger la información confidencial intercambiada entre las partes durante la vigencia del contrato y por un periodo posterior a su terminación.\n\n## Texto sugerido\n\n\"Las partes se obligan a mantener en estricta confidencialidad toda información técnica, comercial, financiera o de cualquier otra índole que reciban de la contraparte con motivo de la ejecución del presente contrato, absteniéndose de divulgarla a terceros sin autorización previa y por escrito. Esta obligación subsistirá durante un plazo de cinco (5) años contados a partir de la terminación del contrato, cualquiera que sea su causa.\"\n\n## Excepciones habituales\n\n- Información que sea o se vuelva pública sin culpa de la parte receptora.\n- Información requerida por autoridad competente, previa notificación a la contraparte.\n- Información ya conocida por la parte receptora antes de la divulgación."
+    },
+    {
+      "slug": "clausula-de-terminacion-anticipada",
+      "type": "Proceso",
+      "title": "Cláusula de Terminación Anticipada",
+      "description": "Modelo de cláusula que regula las causales y el procedimiento de terminación anticipada del contrato mercantil.",
+      "tags": [
+        "l-legal",
+        "contratos",
+        "clausulas"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-03"
+      ],
+      "altitude": 1,
+      "body": "## Objetivo\n\nEstablecer las causales por las que cualquiera de las partes puede dar por terminado el contrato antes del vencimiento del plazo pactado, así como el procedimiento de notificación.\n\n## Texto sugerido\n\n\"Cualquiera de las partes podrá dar por terminado anticipadamente el presente contrato mediante notificación por escrito con al menos treinta (30) días naturales de anticipación, sin necesidad de declaración judicial. La terminación anticipada no libera a las partes de las obligaciones de confidencialidad pactadas (ver [Cláusula de Confidencialidad](/clausula-de-confidencialidad.md)) ni de los pagos ya devengados a la fecha de terminación.\"\n\n## Consideraciones de uso\n\n- Definir si aplica penalización por terminación sin causa.\n- Verificar el plazo mínimo de aviso conforme al giro del cliente.\n- Documentar el motivo de terminación en el expediente del cliente."
+    },
+    {
+      "slug": "checklist-de-due-diligence-societaria",
+      "type": "Proceso",
+      "title": "Checklist de Due Diligence Societaria",
+      "description": "Lista de verificación para la revisión legal de una sociedad objetivo previa a una operación de adquisición.",
+      "tags": [
+        "l-legal",
+        "checklist",
+        "corporativo"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-04"
+      ],
+      "altitude": 3,
+      "body": "## Objetivo\n\nGuiar la revisión documental y legal de la sociedad objetivo antes de cerrar una operación de compraventa de acciones o activos.\n\n## Puntos de revisión\n\n1. Acta constitutiva y reformas estatutarias vigentes.\n2. Libro de actas de asamblea y de consejo de los últimos cinco ejercicios.\n3. Contratos relevantes con clientes y proveedores, incluyendo cláusulas de cambio de control.\n4. Situación fiscal y existencia de créditos fiscales o auditorías en curso.\n5. Litigios activos y contingencias laborales.\n6. Cumplimiento regulatorio sectorial (ver [Riesgo de Incumplimiento Regulatorio Mercantil](/riesgo-de-incumplimiento-regulatorio-mercantil.md)).\n\n## Entregable\n\nUn reporte de hallazgos clasificado por severidad (crítico, relevante, menor) con recomendación de continuar, ajustar precio o abandonar la operación."
+    },
+    {
+      "slug": "checklist-de-proteccion-de-datos-personales",
+      "type": "Proceso",
+      "title": "Checklist de Protección de Datos Personales",
+      "description": "Lista de verificación de cumplimiento en materia de protección de datos personales para clientes del despacho.",
+      "tags": [
+        "l-legal",
+        "checklist",
+        "proteccion-datos"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-05"
+      ],
+      "altitude": 3,
+      "body": "## Objetivo\n\nVerificar que el cliente cuente con los elementos mínimos exigidos por la normativa de protección de datos personales en posesión de particulares.\n\n## Puntos de revisión\n\n1. Aviso de privacidad publicado y actualizado.\n2. Registro del inventario de bases de datos personales tratadas.\n3. Mecanismos para atender derechos ARCO (acceso, rectificación, cancelación, oposición).\n4. Contratos con encargados de tratamiento de datos (proveedores de nube, nómina, mensajería).\n5. Medidas de seguridad administrativas, físicas y técnicas documentadas.\n6. Procedimiento de notificación de vulneraciones de seguridad.\n\n## Entregable\n\nUn checklist firmado por el responsable de cumplimiento del cliente, con fecha de próxima revisión a doce meses."
+    },
+    {
+      "slug": "riesgo-de-incumplimiento-regulatorio-mercantil",
+      "type": "Riesgo",
+      "title": "Riesgo de Incumplimiento Regulatorio Mercantil",
+      "description": "Riesgo recurrente detectado en clientes que operan sin actualizar su cumplimiento regulatorio sectorial vigente.",
+      "tags": [
+        "l-legal",
+        "riesgos",
+        "regulatorio"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-06"
+      ],
+      "altitude": 3,
+      "body": "## Descripción del riesgo\n\nVarios clientes del despacho operan bajo permisos o registros regulatorios que no han sido actualizados conforme a reformas recientes en su sector (comercio electrónico, servicios financieros no bancarios, logística transfronteriza), exponiéndolos a sanciones administrativas y a la nulidad de contratos celebrados bajo dicho régimen.\n\n## Evidencia\n\nSe ha observado el patrón en al menos tres expedientes distintos durante el último año, en cada caso detectado durante la etapa de due diligence societaria previa a una operación de financiamiento o adquisición.\n\n## Mitigación recomendada\n\n- Incluir en el checklist de onboarding una revisión regulatoria sectorial obligatoria.\n- Establecer alertas de vigencia de permisos y registros con seis meses de anticipación.\n- Recomendar al cliente un dictamen de cumplimiento regulatorio anual."
+    },
+    {
+      "slug": "riesgo-de-clausulas-abusivas-en-adhesion",
+      "type": "Riesgo",
+      "title": "Riesgo de Cláusulas Abusivas en Adhesión",
+      "description": "Riesgo identificado en contratos de adhesión que incluyen cláusulas potencialmente abusivas frente al consumidor final.",
+      "tags": [
+        "l-legal",
+        "riesgos",
+        "consumidor"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-07"
+      ],
+      "altitude": 3,
+      "body": "## Descripción del riesgo\n\nAlgunos contratos de adhesión revisados para clientes del sector retail y tecnología incluyen cláusulas de exención total de responsabilidad, renuncia anticipada a acciones legales, o límites de responsabilidad desproporcionadamente bajos frente al valor de la transacción, lo cual puede ser declarado abusivo por la autoridad de protección al consumidor.\n\n## Evidencia\n\nDetectado en la revisión de condiciones generales de venta de dos clientes distintos, ambos con volumen alto de contratación en línea con consumidores finales.\n\n## Mitigación recomendada\n\n- Sustituir cláusulas de exención total por límites razonables y proporcionales (ver [Cláusula de Limitación de Responsabilidad](/clausula-de-limitacion-de-responsabilidad.md)).\n- Evitar renuncias anticipadas a derechos irrenunciables del consumidor.\n- Someter las condiciones generales a revisión legal antes de cada campaña comercial relevante."
+    },
+    {
+      "slug": "politica-de-retencion-documental",
+      "type": "Politica",
+      "title": "Política de Retención Documental",
+      "description": "Política corporativa que define los plazos mínimos de conservación de documentos legales y contractuales del despacho y sus clientes.",
+      "tags": [
+        "l-legal",
+        "politica",
+        "gobierno-documental"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-08"
+      ],
+      "altitude": 4,
+      "body": "## Objetivo\n\nEstablecer los plazos mínimos de conservación documental aplicables a expedientes contractuales, corporativos, fiscales y laborales gestionados por el despacho para sus clientes.\n\n## Plazos de referencia\n\n- Contratos mercantiles y sus anexos: diez (10) años a partir de su terminación.\n- Documentación fiscal soporte: cinco (5) años conforme al plazo de caducidad de facultades de comprobación.\n- Expedientes laborales individuales: cinco (5) años posteriores a la terminación de la relación laboral.\n- Actas de asamblea y libros corporativos: conservación indefinida.\n\n## Responsables\n\nEl responsable de cumplimiento de cada expediente debe validar anualmente que los plazos de retención se respeten y que la destrucción de documentos vencidos quede documentada en el acta correspondiente."
+    },
+    {
+      "slug": "politica-de-firma-electronica-de-contratos",
+      "type": "Politica",
+      "title": "Política de Firma Electrónica de Contratos",
+      "description": "Política que regula el uso de firma electrónica avanzada en la formalización de contratos gestionados por el despacho.",
+      "tags": [
+        "l-legal",
+        "politica",
+        "firma-electronica"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-09"
+      ],
+      "altitude": 4,
+      "body": "## Objetivo\n\nDefinir los supuestos en que el despacho recomienda el uso de firma electrónica avanzada frente a la firma autógrafa en la formalización de contratos de sus clientes.\n\n## Reglas generales\n\n1. Se recomienda firma electrónica avanzada certificada para contratos mercantiles de bajo y mediano riesgo.\n2. Se recomienda firma autógrafa ante fedatario público para actos que constituyan o modifiquen derechos reales sobre inmuebles.\n3. Todo contrato firmado electrónicamente debe conservarse junto con su constancia de firma conforme a la política de retención documental (ver [Política de Retención Documental](/politica-de-retencion-documental.md)).\n\n## Responsables\n\nEl área de operaciones del despacho valida trimestralmente que los proveedores de firma electrónica utilizados mantengan vigente su acreditación ante la autoridad competente."
+    },
+    {
+      "slug": "machote-de-contrato-de-prestacion-de-servicios",
+      "type": "Proceso",
+      "title": "Machote de Contrato de Prestación de Servicios",
+      "description": "Plantilla base de contrato de prestación de servicios profesionales para uso recurrente del despacho.",
+      "tags": [
+        "l-legal",
+        "machote",
+        "contratos"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-10"
+      ],
+      "altitude": 2,
+      "body": "## Objetivo\n\nServir como punto de partida estandarizado para la redacción de contratos de prestación de servicios profesionales entre el cliente y sus proveedores.\n\n## Estructura sugerida\n\n1. Declaraciones de las partes.\n2. Objeto del contrato y alcance de los servicios.\n3. Contraprestación y forma de pago.\n4. Vigencia y terminación anticipada.\n5. Confidencialidad y propiedad intelectual.\n6. Limitación de responsabilidad.\n7. Legislación aplicable y jurisdicción.\n\n## Notas de uso\n\nEste machote debe adaptarse al giro específico del prestador de servicios y revisarse contra la normativa sectorial aplicable antes de su firma. No sustituye la cláusula específica de confidencialidad ni la de limitación de responsabilidad, que deben incorporarse por referencia desde sus modelos correspondientes."
+    },
+    {
+      "slug": "machote-de-acuerdo-de-confidencialidad-bilateral",
+      "type": "Proceso",
+      "title": "Machote de Acuerdo de Confidencialidad Bilateral",
+      "description": "Plantilla base de acuerdo de confidencialidad bilateral (NDA) para negociaciones previas a una operación mercantil.",
+      "tags": [
+        "l-legal",
+        "machote",
+        "nda"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-11"
+      ],
+      "altitude": 2,
+      "body": "## Objetivo\n\nProporcionar una plantilla base de acuerdo de confidencialidad bilateral para etapas de negociación previas a la firma de un contrato definitivo, por ejemplo en procesos de due diligence.\n\n## Estructura sugerida\n\n1. Definición de información confidencial y sus exclusiones.\n2. Obligaciones de las partes receptoras.\n3. Plazo de vigencia de la obligación de confidencialidad (ver [Cláusula de Confidencialidad](/clausula-de-confidencialidad.md) para el texto base reutilizable).\n4. Consecuencias del incumplimiento.\n5. Legislación aplicable y resolución de controversias.\n\n## Notas de uso\n\nEste machote se utiliza típicamente antes de compartir información financiera o comercial sensible con una contraparte potencial, y debe firmarse antes de abrir la sala de datos (data room) del proceso."
+    },
+    {
+      "slug": "metrica-de-revision-contractual-promedio",
+      "type": "Metrica",
+      "title": "Métrica de Revisión Contractual Promedio",
+      "description": "Indicador que mide el tiempo promedio que toma el despacho en revisar y devolver comentarios sobre un contrato enviado por el cliente.",
+      "tags": [
+        "l-legal",
+        "metrica",
+        "operacion"
+      ],
+      "timestamp": "2026-07-08T10:00:00Z",
+      "sources": [
+        "conv:demo-bufete-12"
+      ],
+      "altitude": 5,
+      "body": "## Definición\n\nTiempo promedio, medido en días hábiles, entre la recepción de un contrato para revisión y la entrega de comentarios o marcado (redline) al cliente.\n\n## Cálculo\n\nSuma de días hábiles de respuesta de todas las revisiones completadas en el periodo, dividida entre el número total de revisiones completadas en ese mismo periodo.\n\n## Meta de referencia\n\nEl despacho establece como meta interna un promedio no mayor a tres (3) días hábiles para contratos de complejidad baja o media, y de siete (7) días hábiles para contratos de complejidad alta (financiamiento, fusiones y adquisiciones).\n\n## Uso del indicador\n\nEsta métrica se revisa mensualmente en la reunión de coordinación del área legal y sirve como insumo para decisiones de asignación de carga de trabajo entre los abogados responsables."
+    }
+  ]
+}

@@ -11,8 +11,25 @@ import { BundleStore } from './infrastructure/bundle-store';
 import { EmbeddingsClient, GeminiEmbeddingsClient } from './infrastructure/embeddings';
 import { MockEmbeddingsClient } from './infrastructure/embeddings.mock';
 import { indexDelta } from './indexing/indexer';
+import { validateConcept } from './partners/validator';
+import { createPartnerBundleWithStorage } from './partners/bundle';
+import { ingestPartnerDocument, PartnerIngestInput } from './partners/partner-ingest';
+import { uploadPartnerSource, PartnerSourceTooLargeError } from './partners/source-upload';
+import { updatePartnerDraft, DraftUpdateInput } from './partners/partner-draft-update';
+import { listPartnerDrafts, getPartnerDraft, PartnerDraftsListInput, PartnerDraftGetInput } from './partners/partner-drafts-list';
+import {
+  publishPartnerPackage,
+  PartnerPublishInput,
+  PartnerPublishChainBrokenError,
+  PartnerDraftsNotFoundError,
+  PartnerPublishValidationError,
+  PartnerPublishPartialFailureError,
+} from './partners/publisher';
+import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
+import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
+import { getPartnerPackageEvalStatus } from './partners/partner-eval-status';
 
-const app = new Hono();
+export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
 const distiller = new DocumentDistiller();
 
@@ -270,6 +287,563 @@ app.post('/internal/index-delta', async (c) => {
   }
 });
 
+// KL0-W3 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.3): ruta M2M de
+// validación OKF de 3 niveles para el Knowledge Lab de aliados. PURA: solo lee (a lo sumo un
+// SELECT sobre okf_partner_concepts para resolver packagePaths); cero escrituras a bundle,
+// índice o BD ([INV-KL5]). Mismo patrón de auth `x-api-key === M2M_API_KEY` que
+// /internal/index-delta. La misma librería (src/partners/validator.ts) validará en el editor
+// (vía panel) y en el gate del publisher cuando exista ([INV-KL1]).
+app.post('/internal/partner-validate', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-validate cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const body = z.object({
+      markdown: z.string().min(1),
+      partner_id: z.string().uuid(),
+      package_slug: z.string().optional(),
+      for_publish: z.boolean().optional(),
+      package_paths: z.array(z.string()).optional(),
+    }).parse(rawBody);
+
+    let packagePaths = body.package_paths;
+
+    if (!packagePaths && body.package_slug) {
+      // KL0-W3 — CONTRADICCIÓN DETECTADA CON EL CÓDIGO REAL (reportada, no improvisada):
+      // migrations/007_partner_index.sql define okf_partner_concepts con columna `package_id`
+      // (UUID), SIN columna `package_slug`. No existe en este repo (ni en ningún otro accesible
+      // desde el Cold-Tier del compiler) una tabla que resuelva partner_id + package_slug →
+      // package_id; ese mapeo, de existir, vive en el plano de control `teseo-control`
+      // (multitenant-admin-panel, otra base de datos por completo — ADR-206), al que este
+      // servicio no está conectado. Para no inventar un join inexistente: `package_slug` solo
+      // se acepta aquí si es literalmente un UUID (se interpreta como `package_id`); si no lo
+      // es, se responde 501 explícito en vez de adivinar. Ver el reporte de la WU KL0-W3 para
+      // decidir el mapeo real (candidato: exponer package_id además de/en vez de package_slug
+      // desde el panel, que sí conoce el plano de control).
+      const packageIdCandidate = z.string().uuid().safeParse(body.package_slug);
+      if (!packageIdCandidate.success) {
+        return c.json({
+          error: 'Not Implemented',
+          details:
+            'package_slug no resuelve a package_id: okf_partner_concepts (migrations/007) no tiene columna package_slug y no hay mapeo slug→id accesible desde este servicio. Pasa package_paths explícitamente, o un package_slug que sea el UUID de package_id.',
+        }, 501);
+      }
+
+      const { rows } = await indexerPool.query(
+        'SELECT DISTINCT path FROM okf_partner_concepts WHERE partner_id = $1 AND package_id = $2',
+        [body.partner_id, packageIdCandidate.data]
+      );
+      packagePaths = rows.map((r: { path: string }) => r.path);
+    }
+
+    const report = validateConcept(body.markdown, {
+      level: 'n3',
+      packagePaths,
+      forPublish: body.for_publish,
+    });
+
+    return c.json(report, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-validate:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W1: ruta M2M interna para crear bundle de aliado
+// Auth: header `x-api-key` === process.env.M2M_API_KEY
+// Body: {partner_id}
+app.post('/internal/partner-bundle-create', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-bundle-create cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const { partner_id } = z.object({ partner_id: z.string().uuid() }).parse(rawBody);
+
+    const result = await createPartnerBundleWithStorage(partner_id);
+
+    return c.json({
+      partner_id,
+      bucket_name: `${process.env.GCS_PARTNER_BUNDLE_PREFIX ?? 'kdb-partner-'}${partner_id}`,
+      files_created: result.fileCount,
+      verified: result.verified,
+    }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-bundle-create:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W3: ruta M2M interna para ingerir documento de aliado
+// Auth: header `x-api-key` === process.env.M2M_API_KEY
+// Body: {partner_id, package_slug, document: {filename, content_base64 | text}}
+//    o: {partner_id, package_slug, source_gcs_object} (KL2-W2 — lee el documento ya subido a
+//       `_fuentes/` vía /internal/partner-source-upload en vez de requerir que el panel
+//       reenvíe el binario completo; ver src/partners/partner-ingest.ts::resolveDocument)
+// Pipeline: distiller-v2 → router HOCFLIT → pii-redactor → draft a _staging/
+app.post('/internal/partner-ingest', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-ingest cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      package_slug: z.string().min(1),
+      document: z.object({
+        filename: z.string().min(1),
+        content_base64: z.string().optional(),
+        text: z.string().optional(),
+      }).optional(),
+      source_gcs_object: z.string().min(1).optional(),
+    }).refine((v) => v.document || v.source_gcs_object, {
+      message: 'Debe traer document o source_gcs_object',
+    }).parse(rawBody);
+
+    const store = new BundleStore({
+      tenantId: input.partner_id,
+    });
+
+    const result = await ingestPartnerDocument(input as PartnerIngestInput, store);
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-ingest:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL2-W1 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.2/§3.3): ruta M2M interna
+// para subir una fuente cruda del aliado a `_fuentes/` del bundle. Espeja la mecánica raw que
+// usa el génesis del bundle (partners/bundle.ts::writePartnerBundle) para escribir
+// `_staging/.keep`: escribe vía BundleStore.write() en un path que NO termina en `.md`, por lo
+// que la validación de frontmatter no se dispara; la entrada SÍ queda en el hash-chain de
+// log.md (misma vía única de escritura). Ver src/partners/source-upload.ts para el detalle de
+// codificación (el contenido se guarda como el base64 recibido, no como bytes binarios).
+// Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que /internal/*).
+// Body: {partner_id, filename, content_base64}
+app.post('/internal/partner-source-upload', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-source-upload cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      filename: z.string().min(1),
+      content_base64: z.string().min(1),
+    }).parse(rawBody);
+
+    const store = new BundleStore({
+      tenantId: input.partner_id,
+    });
+
+    const result = await uploadPartnerSource(
+      { partner_id: input.partner_id, filename: input.filename, content_base64: input.content_base64 },
+      store
+    );
+
+    return c.json({ sha256: result.sha256, gcs_object: result.gcs_object }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    if (error instanceof PartnerSourceTooLargeError) {
+      return c.json({ error: error.message }, 413);
+    }
+    console.error('Error in /internal/partner-source-upload:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W3: ruta M2M interna para actualizar draft de aliado (curaduría)
+// Auth: header `x-api-key` === process.env.M2M_API_KEY
+// Body: {partner_id, draft_path, markdown}
+// Validaciones:
+//  - draft_path debe estar bajo _staging/ (422 si no)
+//  - frontmatter válido contra PartnerConceptFrontmatterSchema excepto confidence
+//  - curator completo (422 si no)
+//  - confidence forzado a 'draft'
+app.post('/internal/partner-draft-update', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-draft-update cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      draft_path: z.string().min(1),
+      markdown: z.string().min(1),
+    }).parse(rawBody);
+
+    const store = new BundleStore({
+      tenantId: input.partner_id,
+    });
+
+    const result = await updatePartnerDraft(input as DraftUpdateInput, store);
+
+    return c.json(result, 200);
+  } catch (error: any) {
+    // Errores de validación del tipo {code: 422, message: string}
+    if (error?.code === 422) {
+      return c.json({ error: error.message }, 422);
+    }
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-draft-update:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W1 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §4 P-KL3): ruta M2M interna
+// de listado de drafts de aliado para el editor guiado. Auth: header `x-api-key` ===
+// process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*). Body:
+// {partner_id, package_slug?}. PURA: solo lee GCS (BundleStore.list/read) y, a lo sumo, un
+// SELECT sobre okf_partner_concepts para el filtro de publicados — cero escrituras.
+// Ver src/partners/partner-drafts-list.ts (cabecera) para el criterio exacto de exclusión de
+// drafts ya publicados (resolución as-built PA2-W4: _staging/ es append-only).
+app.post('/internal/partner-drafts-list', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-drafts-list cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      package_slug: z.string().min(1).optional(),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await listPartnerDrafts(input as PartnerDraftsListInput, store, indexerPool);
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-drafts-list:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W1: ruta M2M interna de lectura de un draft de aliado (markdown crudo para el editor).
+// Auth: header `x-api-key` === process.env.M2M_API_KEY. Body: {partner_id, draft_path}.
+// Reúsa el guard anti-traversal de /internal/partner-draft-update (validateDraftPath): 422 si
+// draft_path no está bajo _staging/. Cero escrituras.
+app.post('/internal/partner-draft-get', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-draft-get cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      draft_path: z.string().min(1),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await getPartnerDraft(input as PartnerDraftGetInput, store);
+
+    return c.json(result, 200);
+  } catch (error: any) {
+    if (error?.code === 422) {
+      return c.json({ error: error.message }, 422);
+    }
+    if (error?.code === 404) {
+      return c.json({ error: error.message }, 404);
+    }
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-draft-get:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// KL3-W2 (PLAN-KnowledgeLab-Epicas-KL.md; DISEÑO-Knowledge-Lab.md §3.3): asistente IA del
+// Knowledge Lab de aliados — 3 modos (draft_from_source/reorganize/fix_findings). Auth: header
+// `x-api-key` === process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*).
+// Guardrails obligatorios ([INV-KL3]/[INV-KL4]/[INV-KL6], RP-KL4/RP-KL8): ver cabecera de
+// src/partners/partner-assist.ts. Cero escrituras — la salida SIEMPRE se revalida
+// (validateConcept level 'n3') y se devuelve {markdown, report, stripped_refs}, nunca persiste.
+const PartnerAssistFindingSchema = z.object({
+  rule_id: z.string(),
+  level: z.enum(['n1', 'n2', 'n3']).optional(),
+  severity: z.enum(['error', 'warn']).optional(),
+  message_es: z.string(),
+  line: z.number().optional(),
+  fix: z.object({
+    kind: z.enum(['set_field', 'replace_text']),
+    description_es: z.string(),
+    value: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+  }).optional(),
+});
+
+app.post('/internal/partner-assist', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-assist cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      mode: z.enum(['draft_from_source', 'reorganize', 'fix_findings']),
+      partner_id: z.string().uuid(),
+      markdown: z.string().min(1).optional(),
+      source_gcs_objects: z.array(z.string().min(1)).optional(),
+      findings: z.array(PartnerAssistFindingSchema).optional(),
+      concept_type: z.string().optional(),
+      system: z.string().optional(),
+    }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId: input.partner_id });
+    const result = await runPartnerAssist(input as PartnerAssistInput, store);
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof PartnerAssistInputError) {
+      return c.json({ error: error.message }, 422);
+    }
+    if (error instanceof PartnerAssistLlmError) {
+      return c.json({ error: error.message }, 502);
+    }
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-assist:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA2-W4: ruta M2M interna para publicar una versión firmada de paquete de aliado.
+// Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que /internal/index-delta).
+// Body: {partner_id, partner_slug, package_id, package_slug, version, draft_paths[]} — la
+// identidad (partner/paquete) y la selección de drafts aprobados las decide el panel
+// (teseo-control); este compiler NO adivina ninguna de las dos (resolución de asignación,
+// PLAN-Aliados-Epicas-PA.md PA2-W4).
+// Secuencia: (1) verifyChain() → 409 si rota [INV-3.3]; (2) lee y valida TODOS los drafts
+// (404 si falta alguno; 422 + reports si ∃ error de validación, CERO cambios [INV-3.1]);
+// (3) escribe conceptos + portada del paquete; (4) manifest canónico + firma KMS; (5) índice
+// delta a okf_partner_concepts/okf_partner_edges en una transacción [INV-6.1]. Fallo en los
+// pasos 3-5 → 500 con detalle de qué quedó escrito (sin rollback de GCS, ver src/partners/publisher.ts).
+app.post('/internal/partner-publish', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-publish cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = z.object({
+      partner_id: z.string().uuid(),
+      partner_slug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,39}$/),
+      package_id: z.string().uuid(),
+      package_slug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,59}$/),
+      version: z.number().int().min(1),
+      draft_paths: z.array(z.string().min(1)).min(1),
+    }).parse(rawBody);
+
+    const result = await publishPartnerPackage(input as PartnerPublishInput, {
+      pool: indexerPool,
+      embeddings: indexerEmbeddings,
+    });
+
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    if (error instanceof PartnerPublishChainBrokenError) {
+      return c.json({ error: error.message }, 409);
+    }
+    if (error instanceof PartnerDraftsNotFoundError) {
+      return c.json({ error: error.message, missing: error.missing }, 404);
+    }
+    if (error instanceof PartnerPublishValidationError) {
+      return c.json({ error: error.message, reports: error.reports }, 422);
+    }
+    if (error instanceof PartnerPublishPartialFailureError) {
+      return c.json({ error: error.message, partial: error.partial }, 500);
+    }
+    console.error('Error in /internal/partner-publish:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA4-W3a: ruta M2M de sync de licencias — el panel (teseo-control) proyecta un contrato de
+// aliado a una fila de kdb_partner_licenses y llama aquí para reflejarla. Auth: header
+// `x-api-key` === process.env.M2M_API_KEY (mismo patrón que el resto de /internal/*).
+// action='upsert' → upsertLicense (INSERT ... ON CONFLICT (contract_id) DO UPDATE);
+// action='delete' → deleteLicense (DELETE por contract_id).
+app.post('/internal/partner-license-sync', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-license-sync cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const input = PartnerLicenseSyncInputSchema.parse(rawBody);
+
+    if (input.action === 'upsert') {
+      const license = input.license!;
+      await upsertLicense(indexerPool, {
+        contract_id: input.contract_id,
+        tenant_id: license.tenant_id,
+        partner_id: license.partner_id,
+        package_id: license.package_id,
+        version: license.version,
+        systems: license.systems,
+        altitude_max: license.altitude_max,
+        modules: license.modules,
+        valid_from: license.valid_from,
+        valid_until: license.valid_until,
+        status: license.status,
+        partner_slug: license.partner_slug,
+        partner_legal_name: license.partner_legal_name,
+        package_slug: license.package_slug,
+        package_title: license.package_title,
+      });
+    } else {
+      await deleteLicense(indexerPool, input.contract_id);
+    }
+
+    return c.json({ ok: true, action: input.action }, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-license-sync:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// PA7-W2: ruta M2M interna de estado del gate de eval de paquete — el panel (teseo-control) la
+// llama antes de activar el PRIMER contrato de un paquete de aliado, NUNCA consulta el Cold-Tier
+// directo. Auth: header `x-api-key` === process.env.M2M_API_KEY (mismo patrón que
+// /internal/partner-license-sync). Query params: package_id, partner_id (ambos UUID).
+app.get('/internal/partner-package-eval-status', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/partner-package-eval-status cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const query = z
+      .object({
+        package_id: z.string().uuid(),
+        partner_id: z.string().uuid(),
+      })
+      .parse({
+        package_id: c.req.query('package_id'),
+        partner_id: c.req.query('partner_id'),
+      });
+
+    const status = await getPartnerPackageEvalStatus(indexerPool, query.package_id, query.partner_id);
+    return c.json(status, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/partner-package-eval-status:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
 // K0-W1 (F-H3): validación de credencial de embeddings al arranque.
 // Ya no existe fallback a mock en runtime: sin credencial, compile() falla en la primera llamada.
 const GEMINI_KEY = process.env.GEMINI_DIRECT_KEY || process.env.GEMINI_API_KEYS?.split(',')[0];
@@ -344,11 +918,16 @@ app.post('/ingest/telegram', async (c) => {
 
 const port = parseInt(process.env.PORT || '8080', 10);
 
-console.log(`Starting server on port ${port}...`);
-serve({
-  fetch: app.fetch,
-  port
-});
+// KL0-W3: guard NODE_ENV==='test' (mismo patrón que embeddings/CompilerEngine en este mismo
+// archivo) — permite importar `app` en tests (ej. server.test.ts) sin levantar un listener TCP
+// real, que antes era un efecto secundario incondicional al importar este módulo.
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`Starting server on port ${port}...`);
+  serve({
+    fetch: app.fetch,
+    port
+  });
+}
 
 // --- E11-H3/H4: Conceptual Database/Engine Changes for tenant_id and ingest_jobs ---
 // The following additions are conceptual and represent what would be needed in CompilerEngine
