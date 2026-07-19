@@ -21,6 +21,33 @@ export interface CompileResult {
   chunkCount: number;
 }
 
+/** Alta de un job de ingesta. Espeja las columnas de `ingest_jobs` (migración 002 + 003). */
+export interface IngestJobInput {
+  tenant_id: string;
+  status: string;
+  requested_at: string;
+  documents_count: number;
+  workflow_id?: string;
+  tags?: string[];
+  cold_tier_eligible?: boolean;
+  document_metadata: Array<{ document_id: string; metadata?: Record<string, any> }>;
+}
+
+export interface IngestJobRecord {
+  id: string;
+  tenant_id: string;
+  status: string;
+  requested_at: string;
+  documents_count: number;
+  workflow_id: string | null;
+  tags: string[];
+  cold_tier_eligible: boolean;
+  document_metadata: Array<{ document_id: string; metadata?: Record<string, any> }>;
+  error: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
 export class CompilerEngine {
   private pool: Pool;
   private embeddings: EmbeddingsClient;
@@ -111,6 +138,79 @@ export class CompilerEngine {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // --- Registro de jobs de ingesta -------------------------------------------------
+  //
+  // Estos tres métodos EXISTÍAN solo como un `declare module` al final de src/server.ts
+  // que se los prometía al type checker sin que nadie los implementara. Resultado: `tsc`
+  // pasaba, CI pasaba, la imagen se construía, y `/v1/ingest` moría en su primera línea
+  // con `engine.createIngestJob is not a function`. La ruta nunca funcionó en producción.
+  // Verificado en vivo el 2026-07-19 (logs de tenant-admin-panel, 502 al subir un .md).
+  //
+  // Escriben en `ingest_jobs` del mismo pool que `documents`/`chunks` (DATABASE_URL).
+  // Si la tabla no existe o su forma derivó respecto de las migraciones 002/003, estos
+  // métodos FALLAN RUIDOSAMENTE en vez de degradar en silencio: preferimos un 500 que
+  // nombra la tabla a una ingesta que reporta éxito sin dejar rastro.
+
+  public async createIngestJob(job: IngestJobInput): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      const res = await client.query(
+        `INSERT INTO ingest_jobs
+           (tenant_id, status, requested_at, documents_count,
+            workflow_id, tags, cold_tier_eligible, document_metadata)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+         RETURNING id`,
+        [
+          job.tenant_id,
+          job.status,
+          job.requested_at,
+          job.documents_count,
+          job.workflow_id ?? null,
+          JSON.stringify(job.tags ?? []),
+          job.cold_tier_eligible ?? false,
+          JSON.stringify(job.document_metadata ?? []),
+        ]
+      );
+      return res.rows[0].id as string;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async updateIngestJobStatus(jobId: string, status: string): Promise<void> {
+    // `completed_at` se sella cuando el job llega a un estado terminal; 'processing' u
+    // otros intermedios lo dejan intacto.
+    const isTerminal = status === 'completed' || status === 'completed_with_errors' || status === 'failed';
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        `UPDATE ingest_jobs
+            SET status = $2,
+                completed_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE completed_at END
+          WHERE id = $1`,
+        [jobId, status, isTerminal]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getIngestJobStatus(jobId: string): Promise<IngestJobRecord | null> {
+    const client = await this.pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT id, tenant_id, status, requested_at, documents_count, workflow_id,
+                tags, cold_tier_eligible, document_metadata, error, completed_at, created_at
+           FROM ingest_jobs
+          WHERE id = $1`,
+        [jobId]
+      );
+      return res.rows.length > 0 ? (res.rows[0] as IngestJobRecord) : null;
     } finally {
       client.release();
     }
