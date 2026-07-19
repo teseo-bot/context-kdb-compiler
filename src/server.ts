@@ -929,34 +929,13 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
-// --- E11-H3/H4: Conceptual Database/Engine Changes for tenant_id and ingest_jobs ---
-// The following additions are conceptual and represent what would be needed in CompilerEngine
-// and its dependencies (like database adapter) to support tenant_id and ingest_jobs.
-
-declare module "./core/compiler-engine" {
-  interface CompilerEngine {
-    initDb(): Promise<void>;
-    compile(markdown: string, options: { title: string; source: string; bucket?: string; fileName?: string; tenantId?: string; }): Promise<{ chunkCount: number }>;
-    createIngestJob(jobDetails: {
-      tenant_id: string;
-      status: string;
-      requested_at: string;
-      documents_count: number;
-      workflow_id?: string;
-      tags?: string[];
-      cold_tier_eligible?: boolean;
-      document_metadata: Array<{ document_id: string; metadata?: Record<string, any> }>;
-    }): Promise<string>;
-    updateIngestJobStatus(jobId: string, status: string): Promise<void>;
-    getIngestJobStatus(jobId: string): Promise<any | null>;
-  }
-}
-
-// In a real implementation:
-// - CompilerEngine would be updated to accept tenant_id in its compile method and pass it to DB operations.
-// - The DB adapter would ensure all document and chunk insertions include tenant_id.
-// - A new 'ingest_jobs' table would be created (via migration, not DDL here) to store job state.
-// - All queries against 'documents' and 'chunks' tables would filter by 'tenant_id'.
-// - The 'initDb' method would be simplified to only connect/verify, not create schemas.
-// - The DocumentDistiller might also be updated to accept tenant_id for any internal logging/metadata.
+// El `declare module "./core/compiler-engine"` que vivía aquí se retiró el 2026-07-19.
+// Le prometía al type checker `createIngestJob`/`updateIngestJobStatus`/`getIngestJobStatus`
+// sin implementación detrás: `tsc` pasaba, CI pasaba, la imagen se construía y `/v1/ingest`
+// moría en su primera línea en producción. Los tres métodos ahora existen de verdad en
+// CompilerEngine (ver src/core/compiler-engine.ts).
+//
+// ⚠️ No reintroducir un `declare module` sobre una clase propia. Aumentar el tipo de algo
+// que controlamos desactiva la única comprobación que teníamos de que el método existe.
+// Si hace falta un método nuevo, se escribe en la clase.
 
