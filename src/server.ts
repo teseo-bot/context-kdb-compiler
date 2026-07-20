@@ -41,8 +41,13 @@ const indexerPool = new Pool({
 const indexerEmbeddings: EmbeddingsClient =
   process.env.NODE_ENV === 'test' ? new MockEmbeddingsClient() : new GeminiEmbeddingsClient();
 
-// Initialize CompilerEngine. In production, we'd pass environment variables here.
-const engine = new CompilerEngine({ dbUrl: process.env.DATABASE_URL });
+// Initialize CompilerEngine.
+// El corpus (documents/chunks/ingest_jobs) vive en el Cold-Tier: ahí corrieron las migraciones
+// canónicas 001→008 del compiler (ver infra/create-coldtier-project.sh). El `public.documents`
+// del monolito (DATABASE_URL) es OTRA tabla — el registro de archivos del panel, sin `document_hash`
+// ni `content` — por eso compile() moría con `column "document_hash" does not exist`. Se apunta a
+// COLD_TIER_URL (mismo criterio que `indexerPool`), con fallback a DATABASE_URL para dev/local.
+const engine = new CompilerEngine({ dbUrl: process.env.COLD_TIER_URL || process.env.DATABASE_URL });
 
 // Ensure DB is initialized before starting processing
 let dbInitialized = false;
@@ -137,7 +142,9 @@ app.post('/v1/ingest', async (c) => {
     // K9-W1b: si hubo errores por-documento, el job queda 'completed_with_errors' en vez de
     // 'completed' ciego; el batch avanza igual (no se aborta por un documento roto).
     const finalStatus = documentErrors.length > 0 ? 'completed_with_errors' : 'completed';
-    await engine.updateIngestJobStatus(jobId, finalStatus);
+    // RLS FORCE en el Cold-Tier (migración 004): el UPDATE necesita `app.tenant_id` o afecta 0 filas
+    // en silencio (el job quedaría 'pending' para siempre). Se propaga el tenant del request.
+    await engine.updateIngestJobStatus(jobId, finalStatus, tenant_id);
 
     return c.json(
       {
@@ -161,9 +168,10 @@ app.post('/v1/ingest', async (c) => {
 app.get('/v1/jobs/:id', async (c) => {
   try {
     const jobId = c.req.param('id');
-    // E11-H3: Retrieve job status from 'ingest_jobs' table, filtering by tenant_id (conceptual)
-    // In a real scenario, tenant_id would be passed via auth context or query params for RLS
-    const jobStatus = await engine.getIngestJobStatus(jobId /*, tenant_id from auth context */);
+    // RLS FORCE en el Cold-Tier (migración 004): sin `app.tenant_id`, el SELECT devuelve 0 filas.
+    // El tenant llega por query param `?tenant_id=` (el panel lo conoce por sesión y debe enviarlo).
+    const tenantId = c.req.query('tenant_id');
+    const jobStatus = await engine.getIngestJobStatus(jobId, tenantId);
 
     if (!jobStatus) {
       return c.json({ error: 'Job not found' }, 404);
