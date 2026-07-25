@@ -39,6 +39,7 @@ import {
   PartnerDraftsNotFoundError,
   PartnerPublishValidationError,
 } from './publisher';
+import { SignAndPreserve, Constancia, PreservationSubject } from './preservation';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5436/postgres';
 
@@ -501,4 +502,102 @@ test('PA2-W4 (extra): draft_path inexistente en _staging/ → 404', async () => 
     [packageId]
   );
   assert.equal(rows.rows[0].count, 0);
+});
+
+// ==================== NOM-151 (capa D) — cableo gated default-off ====================
+//
+// Prueban SOLO el enganche del seam en el publisher (que el seam en sí funcione lo prueba
+// preservation.test.ts). Preserver inyectado (fake `SignAndPreserve`) para no depender de KMS.
+
+/** Publica un solo concepto y devuelve el store, para no repetir el setup en cada test. */
+async function publishOne(
+  packageSlug: string,
+  extraDeps: { preserver?: SignAndPreserve }
+): Promise<{ store: BundleStore; packageSlug: string }> {
+  const storage = new InMemoryStorageBackend();
+  const store = new BundleStore({ tenantId: TEST_PARTNER_ID, storage });
+  const packageId = randomUUID();
+  ALL_PACKAGE_IDS.push(packageId);
+
+  const draftPath = '_staging/2026-07-08/concepto-nom151.md';
+  await store.write(
+    draftPath,
+    conceptMarkdown({ title: 'Concepto NOM-151', description: 'Concepto de prueba para el cableo de la constancia.', body: 'Cuerpo.' }),
+    { actor: 'test', accion: 'draft' }
+  );
+
+  const { signManifestFn } = makeFakeSigner();
+  const embeddings = new MockEmbeddingsClient768();
+  const input: PartnerPublishInput = {
+    partner_id: TEST_PARTNER_ID,
+    partner_slug: PARTNER_SLUG,
+    package_id: packageId,
+    package_slug: packageSlug,
+    version: 1,
+    draft_paths: [draftPath],
+  };
+  await publishPartnerPackage(input, { pool, embeddings, store, signManifestFn, ...extraDeps });
+  return { store, packageSlug };
+}
+
+test('NOM-151 (gated): sin NOM151_PRESERVE, el publish NO escribe constancia.json (default-off)', async () => {
+  const prev = process.env.NOM151_PRESERVE;
+  delete process.env.NOM151_PRESERVE;
+  try {
+    const { store, packageSlug } = await publishOne('contratos-nom151-off', {});
+    const constancia = await store.read(`paquetes/${packageSlug}/constancia.json`);
+    assert.equal(constancia, null, 'default-off: no se emite constancia en el path vivo');
+  } finally {
+    if (prev !== undefined) process.env.NOM151_PRESERVE = prev;
+  }
+});
+
+test('NOM-151 (gated): con NOM151_PRESERVE=on, el publish escribe constancia.json sobre el manifiesto firmado', async () => {
+  const prev = process.env.NOM151_PRESERVE;
+  process.env.NOM151_PRESERVE = 'on';
+
+  // Fake preserver: captura el subject y emite una constancia marcada, sin KMS.
+  let captured: PreservationSubject | undefined;
+  const fakePreserver: SignAndPreserve = {
+    provider: 'kms-timestamp',
+    legalGrade: 'technical',
+    async preserve(subject) {
+      captured = subject;
+      const c: Constancia = {
+        constancia_version: '1',
+        message_sha256: subject.message_sha256,
+        subject_ref: subject.ref,
+        timestamp: '2026-07-23T18:00:00.000Z',
+        timestamp_source: 'kms-server',
+        provider: 'kms-timestamp',
+        legal_grade: 'technical',
+        proof: { type: 'kms-ecdsa-p256', value_b64: 'ZmFrZQ==' },
+        issuer: 'test-key-version',
+      };
+      return c;
+    },
+    async verify() {
+      return { status: 'verified' };
+    },
+  };
+
+  try {
+    const { store, packageSlug } = await publishOne('contratos-nom151-on', { preserver: fakePreserver });
+
+    const file = await store.read(`paquetes/${packageSlug}/constancia.json`);
+    assert.ok(file, 'con el flag on se escribe constancia.json junto al manifiesto');
+    const c = JSON.parse(file!.content) as Constancia;
+    assert.equal(c.constancia_version, '1');
+    assert.equal(c.legal_grade, 'technical');
+    assert.equal(c.subject_ref, `partner:${PARTNER_SLUG}/package:${packageSlug}/v1`);
+
+    // La constancia sella el MISMO hash que firma el manifiesto (capa D complementa capa A).
+    const manifestFile = await store.read(`paquetes/${packageSlug}/manifest.json`);
+    const manifest = JSON.parse(manifestFile!.content);
+    assert.equal(captured?.message_sha256, manifest.manifest_sha256, 'se conserva el manifest_sha256 firmado');
+    assert.equal(c.message_sha256, manifest.manifest_sha256);
+  } finally {
+    if (prev === undefined) delete process.env.NOM151_PRESERVE;
+    else process.env.NOM151_PRESERVE = prev;
+  }
 });

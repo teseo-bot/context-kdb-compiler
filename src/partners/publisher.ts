@@ -32,6 +32,7 @@ import { BundleStore, FRONTMATTER_YAML_ENGINE } from '../infrastructure/bundle-s
 import { EmbeddingsClient } from '../infrastructure/embeddings';
 import { validatePackage, ValidationReport } from './validator';
 import { canonicalize, signManifest, KmsClient } from './signer';
+import { SignAndPreserve, resolvePreserver } from './preservation';
 
 const MAX_EMBED_INPUT_CHARS = 8000;
 const MD_LINK_REGEX = /\[([^\]]*)\]\(([^)]+)\)/g;
@@ -58,6 +59,9 @@ export interface PartnerPublishDeps {
   // digest) puede firmar con `createSign('sha256')` sobre el texto real, produciendo una firma
   // que si verifica con `verifyManifest`. Default: signManifest real (src/partners/signer.ts).
   signManifestFn?: typeof signManifest;
+  // Capa D (NOM-151) — inyectable para tests. Default: `resolvePreserver()` (proveedor por env).
+  // Solo se usa cuando NOM151_PRESERVE === 'on' (gated default-off, ver paso 4b).
+  preserver?: SignAndPreserve;
 }
 
 export interface PackageManifestConcept {
@@ -110,6 +114,9 @@ export interface PartnerPublishPartial {
   index_written: boolean;
   manifest_written: boolean;
   index_delta_committed: boolean;
+  // Opcional: solo presente cuando la capa D (NOM-151) está activa (NOM151_PRESERVE === 'on').
+  // Ausente en el path default-off ⇒ el shape del partial no cambia para los llamadores actuales.
+  constancia_written?: boolean;
 }
 
 export class PartnerPublishPartialFailureError extends Error {
@@ -452,6 +459,28 @@ export async function publishPartnerPackage(
       accion: 'publish',
     });
     partial.manifest_written = true;
+
+    // 4b. Capa D — NOM-151: constancia de conservación sobre el manifiesto YA firmado (capa A).
+    // GATED default-off (`NOM151_PRESERVE=on`): sin aliado real no se emite constancia en el path
+    // vivo ("construir y aislar, no desplegar"; `main` deployable sin cambio de comportamiento).
+    // Fail-closed cuando está activo: si la conservación falla, el publish aborta — una constancia
+    // exigida por compliance no puede omitirse en silencio. El proveedor (kms-timestamp propio vs
+    // psc-externo acreditado) lo decide `resolvePreserver` por env, no este módulo (seam agnóstico).
+    if (process.env.NOM151_PRESERVE === 'on') {
+      const preserver = deps.preserver ?? resolvePreserver();
+      const manifestJson = JSON.stringify(manifest, null, 2);
+      const constancia = await preserver.preserve({
+        ref: `partner:${input.partner_slug}/package:${input.package_slug}/v${input.version}`,
+        message_sha256: manifest.manifest_sha256,
+        message: Buffer.from(manifestJson, 'utf8'),
+      });
+      await store.write(
+        `paquetes/${input.package_slug}/constancia.json`,
+        JSON.stringify(constancia, null, 2),
+        { actor: 'partner-publish-api', accion: 'publish' }
+      );
+      partial.constancia_written = true;
+    }
 
     // 5. Índice delta en UNA transacción SQL [INV-6.1]. Embeddings se calculan ANTES de abrir
     // la transacción (mismo servicio que la indexación de tenant, src/indexing/indexer.ts:
