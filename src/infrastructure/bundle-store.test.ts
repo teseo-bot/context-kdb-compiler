@@ -269,3 +269,51 @@ test('bucket name usa GCS_BUNDLE_PREFIX del entorno', () => {
     else process.env.GCS_BUNDLE_PREFIX = prevPrefix;
   }
 });
+
+// Regresión: con kind ausente los bundles de aliado caían en `kdb-<partner_id>`, un bucket
+// que el aprovisionamiento nunca crea (crea `kdb-partner-<partner_id>`). GCS devolvía 404
+// y el portal de aliados lo mostraba como el 502 al subir fuente.
+test('kind partner usa GCS_PARTNER_BUNDLE_PREFIX, no el de tenant', () => {
+  const prevTenant = process.env.GCS_BUNDLE_PREFIX;
+  const prevPartner = process.env.GCS_PARTNER_BUNDLE_PREFIX;
+  try {
+    delete process.env.GCS_BUNDLE_PREFIX;
+    delete process.env.GCS_PARTNER_BUNDLE_PREFIX;
+
+    const partner = new BundleStore({
+      tenantId: 'acme',
+      kind: 'partner',
+      storage: new InMemoryStorageBackend(),
+    });
+    assert.equal(partner.bucketName, 'kdb-partner-acme');
+
+    const tenant = new BundleStore({
+      tenantId: 'acme',
+      kind: 'tenant',
+      storage: new InMemoryStorageBackend(),
+    });
+    assert.equal(tenant.bucketName, 'kdb-acme');
+
+    // El prefijo de tenant no debe arrastrar al de aliado.
+    process.env.GCS_BUNDLE_PREFIX = 'custom-';
+    const partner2 = new BundleStore({
+      tenantId: 'acme',
+      kind: 'partner',
+      storage: new InMemoryStorageBackend(),
+    });
+    assert.equal(partner2.bucketName, 'kdb-partner-acme');
+
+    process.env.GCS_PARTNER_BUNDLE_PREFIX = 'socios-';
+    const partner3 = new BundleStore({
+      tenantId: 'acme',
+      kind: 'partner',
+      storage: new InMemoryStorageBackend(),
+    });
+    assert.equal(partner3.bucketName, 'socios-acme');
+  } finally {
+    if (prevTenant === undefined) delete process.env.GCS_BUNDLE_PREFIX;
+    else process.env.GCS_BUNDLE_PREFIX = prevTenant;
+    if (prevPartner === undefined) delete process.env.GCS_PARTNER_BUNDLE_PREFIX;
+    else process.env.GCS_PARTNER_BUNDLE_PREFIX = prevPartner;
+  }
+});

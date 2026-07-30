@@ -182,6 +182,19 @@ class GcsStorageBackend implements BundleStorageBackend {
 
 export interface BundleStoreOptions {
   tenantId: string;
+  /**
+   * De quién es el bundle, y por tanto qué prefijo de bucket le toca. Los bundles de
+   * aliado viven en `kdb-partner-<partner_id>` — es el nombre que crea el endpoint de
+   * aprovisionamiento (`/internal/partner-provision`, `GCS_PARTNER_BUNDLE_PREFIX`) — y
+   * los de tenant en `kdb-<tenant_id>` (`GCS_BUNDLE_PREFIX`).
+   *
+   * Sin esto ambos caían en el prefijo de tenant, así que todo endpoint de aliado
+   * buscaba un bucket `kdb-<partner_id>` que nunca se creó: GCS devolvía 404 "The
+   * specified bucket does not exist", el compiler 500 y el portal de aliados lo
+   * presentaba como el 502 al subir fuente. `partner_id` se pasa en `tenantId` porque
+   * el bundle de un aliado es su propio espacio de nombres (PA/ADR-203).
+   */
+  kind?: 'tenant' | 'partner';
   storage?: BundleStorageBackend;
 }
 
@@ -192,7 +205,11 @@ export class BundleStore {
 
   constructor(opts: BundleStoreOptions) {
     this.tenantId = opts.tenantId;
-    this.bucketName = `${process.env.GCS_BUNDLE_PREFIX ?? 'kdb-'}${opts.tenantId}`;
+    const prefix =
+      opts.kind === 'partner'
+        ? process.env.GCS_PARTNER_BUNDLE_PREFIX ?? 'kdb-partner-'
+        : process.env.GCS_BUNDLE_PREFIX ?? 'kdb-';
+    this.bucketName = `${prefix}${opts.tenantId}`;
     this.storage = opts.storage ?? new GcsStorageBackend(this.bucketName);
   }
 

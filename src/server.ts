@@ -441,6 +441,7 @@ app.post('/internal/partner-ingest', async (c) => {
 
     const store = new BundleStore({
       tenantId: input.partner_id,
+      kind: 'partner',
     });
 
     const result = await ingestPartnerDocument(input as PartnerIngestInput, store);
@@ -486,6 +487,7 @@ app.post('/internal/partner-source-upload', async (c) => {
 
     const store = new BundleStore({
       tenantId: input.partner_id,
+      kind: 'partner',
     });
 
     const result = await uploadPartnerSource(
@@ -536,6 +538,7 @@ app.post('/internal/partner-draft-update', async (c) => {
 
     const store = new BundleStore({
       tenantId: input.partner_id,
+      kind: 'partner',
     });
 
     const result = await updatePartnerDraft(input as DraftUpdateInput, store);
@@ -580,7 +583,7 @@ app.post('/internal/partner-drafts-list', async (c) => {
       package_slug: z.string().min(1).optional(),
     }).parse(rawBody);
 
-    const store = new BundleStore({ tenantId: input.partner_id });
+    const store = new BundleStore({ tenantId: input.partner_id, kind: 'partner' });
     const result = await listPartnerDrafts(input as PartnerDraftsListInput, store, indexerPool);
 
     return c.json(result, 200);
@@ -616,7 +619,7 @@ app.post('/internal/partner-draft-get', async (c) => {
       draft_path: z.string().min(1),
     }).parse(rawBody);
 
-    const store = new BundleStore({ tenantId: input.partner_id });
+    const store = new BundleStore({ tenantId: input.partner_id, kind: 'partner' });
     const result = await getPartnerDraft(input as PartnerDraftGetInput, store);
 
     return c.json(result, 200);
@@ -680,7 +683,7 @@ app.post('/internal/partner-assist', async (c) => {
       system: z.string().optional(),
     }).parse(rawBody);
 
-    const store = new BundleStore({ tenantId: input.partner_id });
+    const store = new BundleStore({ tenantId: input.partner_id, kind: 'partner' });
     const result = await runPartnerAssist(input as PartnerAssistInput, store);
 
     return c.json(result, 200);
