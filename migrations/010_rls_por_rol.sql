@@ -29,29 +29,37 @@
 -- TIPO DE `tenant_id`: TEXT, no uuid. Confirmado en 002_add_tenant_id.sql:2,3,19 y en
 -- 003_okf_index.sql. (ADR-208 tenía TEXT como destino; en el Cold-Tier ya lo es.)
 
-CREATE TABLE IF NOT EXISTS role_tenant_map (
+-- ⚠️ TODO OBJETO VA CUALIFICADO CON `kdb.`. Sin cualificar, el schema lo decide el
+-- search_path de quien aplica la migración: en `micontexto-tenant1:hot-tier` (search_path
+-- `"$user", public`) los dos objetos aterrizaron en `public`, no en `kdb`, contradiciendo
+-- la meta que esta misma cabecera declara — `kdb.tenant_of_role(current_user)`. El
+-- criterio de verificación (6 tablas / 18 índices en `kdb`) no lo detecta porque solo
+-- cuenta lo de 009. Detectado y corregido 2026-07-29.
+CREATE TABLE IF NOT EXISTS kdb.role_tenant_map (
   role_name  TEXT PRIMARY KEY,
   tenant_id  TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE role_tenant_map IS
+COMMENT ON TABLE kdb.role_tenant_map IS
   'Mapa credencial->tenant. Fuente de verdad del aislamiento cuando la migracion 011 ligue las politicas a current_user (ADR-210 D-210.7). Una fila por credencial kdb_reader_t{N}.';
 
-CREATE OR REPLACE FUNCTION tenant_of_role(p_role TEXT)
+CREATE OR REPLACE FUNCTION kdb.tenant_of_role(p_role TEXT)
 RETURNS TEXT
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = pg_catalog, public, pg_temp
-AS $$ SELECT tenant_id FROM role_tenant_map WHERE role_name = p_role $$;
+SET search_path = pg_catalog, pg_temp
+AS $$ SELECT tenant_id FROM kdb.role_tenant_map WHERE role_name = p_role $$;
 
 -- SECURITY DEFINER con search_path FIJO: la función debe poder leer role_tenant_map
 -- aunque el rol que la invoca no tenga permiso directo sobre la tabla — si no, cada
 -- credencial de tenant necesitaría SELECT sobre el mapa completo, que es justo lo que
 -- no queremos. El search_path fijo evita el secuestro por schema (CVE clásico de
--- SECURITY DEFINER: un schema temporal con una tabla homónima).
-REVOKE ALL ON FUNCTION tenant_of_role(TEXT) FROM PUBLIC;
+-- SECURITY DEFINER: un schema temporal con una tabla homónima). `public` sale del
+-- search_path fijo porque la referencia a la tabla ya va cualificada: cuanto más corto
+-- el path, menos superficie de secuestro.
+REVOKE ALL ON FUNCTION kdb.tenant_of_role(TEXT) FROM PUBLIC;
 
-COMMENT ON FUNCTION tenant_of_role(TEXT) IS
+COMMENT ON FUNCTION kdb.tenant_of_role(TEXT) IS
   'Devuelve el tenant de una credencial. SECURITY DEFINER + search_path fijo: lee role_tenant_map sin exponerla al rol invocante y sin riesgo de secuestro por schema.';
