@@ -1,5 +1,23 @@
 name: Deploy Compiler to Cloud Run
 
+# El compiler COMPARTIDO vive en `micontexto-control` (ADR-210 D-210.4: publica PCC de
+# aliados y sectorial al Cold-Tier; no toca planos privados). Antes desplegaba a
+# `teseocontextkdb`, el proyecto que se está retirando.
+#
+# ⚠️ Este workflow declara la configuración COMPLETA del servicio a propósito. La versión
+# anterior declaraba menos de la mitad de lo vivo y sobrevivía porque `deploy-cloudrun`
+# hace merge sobre lo que ya está: cualquier despliegue desde cero, o un cambio de
+# proyecto, resucitaba config equivocada. Concretamente, tal como estaba habría deshecho
+# dos arreglos al repuntarse a control:
+#   - `M2M_API_KEY=M2M_API_KEY:latest` → el secreto `M2M_API_KEY` de control es una clave
+#     DISTINTA de la que usan el portal de aliados y los paneles (65 bytes con newline al
+#     final vs. 27 bytes). Montarla devuelve 401 a todo `/internal/partner-*`. El valor
+#     compartido vive en `COMPILER_M2M_API_KEY`.
+#   - `DATABASE_URL` → muerto en producción: los tres pools del servicio prefieren
+#     `COLD_TIER_URL` (src/server.ts:39, :50 y src/ingestion/candidate-poller.ts:344), que
+#     siempre está puesto. Montarlo solo reintroduce el adjunto Cloud SQL del proyecto
+#     viejo.
+
 on:
   push:
     branches:
@@ -7,11 +25,14 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: teseocontextkdb
+  PROJECT_ID: micontexto-control
   REGION: us-central1
   SERVICE_NAME: context-kdb-compiler
   GAR_LOCATION: us-central1-docker.pkg.dev
-  REPOSITORY: teseo-context-repo
+  # `panel-repo` es el único repositorio de Artifact Registry que existe en control.
+  REPOSITORY: panel-repo
+  RUNTIME_SA: compiler-shared-runtime@micontexto-control.iam.gserviceaccount.com
+  COLD_TIER_INSTANCE: micontexto-coldtier:us-central1:context-kdb-db
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
@@ -27,8 +48,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: 'projects/137810875111/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider'
-          service_account: 'github-deployer@teseocontextkdb.iam.gserviceaccount.com'
+          workload_identity_provider: 'projects/1025015138700/locations/global/workloadIdentityPools/github-actions/providers/github-provider'
+          service_account: 'github-deployer@micontexto-control.iam.gserviceaccount.com'
 
       - run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}
 
@@ -44,11 +65,24 @@ jobs:
           image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
           env_vars: |
             NODE_ENV=production
-          flags: --add-cloudsql-instances=teseocontextkdb:us-central1:context-kdb-db
-
+            GCS_PARTNER_BUNDLE_PREFIX=kdb-partner-
           secrets: |
-            DATABASE_URL=DATABASE_URL:latest
+            COLD_TIER_URL=COLD_TIER_URL_COMPILER:latest
+            M2M_API_KEY=COMPILER_M2M_API_KEY:latest
             GEMINI_DIRECT_KEY=GEMINI_DIRECT_KEY:latest
-            M2M_API_KEY=M2M_API_KEY:latest
-          env_vars_update_strategy: merge
-          secrets_update_strategy: merge
+            TESEO_API_KEY=TESEO_API_KEY:latest
+          # `--allow-unauthenticated` replica el estado actual, no lo empeora: los tres
+          # llamantes autentican con un bearer de aplicación (`Bearer TESEO_API_KEY`,
+          # `x-api-key: M2M_API_KEY`), NO con token de identidad de Google, y Cloud Run
+          # valida el invoker ANTES de que la petición llegue al proceso. Cerrarlo aquí
+          # devolvería 403 a todos. Va en SEC-BACKLOG junto con firmar las llamadas.
+          flags: >-
+            --add-cloudsql-instances=${{ env.COLD_TIER_INSTANCE }}
+            --service-account=${{ env.RUNTIME_SA }}
+            --allow-unauthenticated
+            --max-instances=3
+            --cpu=1
+            --memory=512Mi
+            --cpu-boost
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
