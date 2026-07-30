@@ -362,7 +362,7 @@ export async function publishPartnerPackage(
   input: PartnerPublishInput,
   deps: PartnerPublishDeps
 ): Promise<{ manifest: PackageManifest }> {
-  const store = deps.store ?? new BundleStore({ tenantId: input.partner_id });
+  const store = deps.store ?? new BundleStore({ tenantId: input.partner_id, kind: 'partner' });
 
   // 1. verifyChain() — cadena rota ⇒ abort 409 + nada más [INV-3.3].
   const chain = await store.verifyChain();

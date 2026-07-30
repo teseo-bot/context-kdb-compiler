@@ -54,7 +54,7 @@ export async function createPartnerBundleWithStorage(
   const backend = storage || ((): any => {
     throw new Error('Storage backend is required when not using GCS');
   })();
-  const store = new BundleStore({ tenantId: partnerId, storage: backend });
+  const store = new BundleStore({ tenantId: partnerId, kind: 'partner', storage: backend });
 
   const fileCount = await writePartnerBundle(store);
   const verification = await store.verifyChain();
