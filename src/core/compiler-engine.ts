@@ -7,6 +7,8 @@ import { MockEmbeddingsClient } from '../infrastructure/embeddings.mock';
 export interface CompilerOptions {
   dbUrl?: string; // e.g. postgres://user:pass@localhost:5436/dbname
   embeddings?: EmbeddingsClient;
+  /** Tope de conexiones del pool. Sin él: `COMPILER_POOL_MAX`, y en su defecto 2 (ADR-213 D-213.2). */
+  poolMax?: number;
 }
 
 export interface DocumentMetadata {
@@ -55,6 +57,10 @@ export class CompilerEngine {
   constructor(opts?: CompilerOptions) {
     this.pool = new Pool({
       connectionString: opts?.dbUrl || 'postgres://postgres:postgres@localhost:5436/postgres',
+      // ADR-213 D-213.2 — ver la nota extensa en server.ts (indexerPool). Sin `max` declarado
+      // este pool solo aportaría 10 conexiones por instancia, y en la fase B del retiro apunta
+      // a una base con 47 utilizables ya casi repartidas.
+      max: opts?.poolMax ?? (Number.parseInt(process.env.COMPILER_POOL_MAX || '', 10) || 2),
     });
     // K0-W1: embeddings reales por default; mock SOLO bajo NODE_ENV==='test'.
     this.embeddings =

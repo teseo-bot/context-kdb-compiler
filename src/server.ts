@@ -37,6 +37,14 @@ const distiller = new DocumentDistiller();
 // Mismo patrón que CompilerEngine (K0-W1): mock SOLO bajo NODE_ENV==='test'.
 const indexerPool = new Pool({
   connectionString: process.env.COLD_TIER_URL || process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5436/postgres',
+  // ADR-213 D-213.2: el `max` es configuración, no código. Sin declararlo `pg` usa 10, y este
+  // proceso abre DOS pools (éste y el de CompilerEngine) ⇒ 20 conexiones por instancia.
+  // Hoy eso es inocuo porque el compiler compartido apunta al Cold-Tier, que no comparte
+  // instancia con nadie. Deja de serlo en la fase B del retiro: el compiler DEL TENANT apunta al
+  // `hot-tier` de micontexto-tenant1, que es un db-g1-small con `max_connections = 50` (~47
+  // utilizables) contra el que ya tiran el orquestador (30) y el panel (12). 20 más no caben.
+  // Invariante: Σ(max del pool × maxScale) ≤ max_connections − reserva.
+  max: Number.parseInt(process.env.INDEXER_POOL_MAX || '', 10) || 2,
 });
 const indexerEmbeddings: EmbeddingsClient =
   process.env.NODE_ENV === 'test' ? new MockEmbeddingsClient() : new GeminiEmbeddingsClient();
