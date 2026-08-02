@@ -191,3 +191,37 @@ Ver [otro concepto](${seededPath}).
     await pool.end();
   }
 });
+
+// /internal/distill-candidates — contrato de la ruta (auth y validación de entrada). El
+// comportamiento de runV2 en sí ya está cubierto contra Postgres en
+// src/ingestion/candidate-poller.test.ts; aquí solo se verifica que la ruta no deje pasar una
+// llamada sin credencial ni sin tenantId, porque destilar escribe en el bundle del tenant.
+
+test('POST /internal/distill-candidates sin x-api-key → 401', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenantId: 'tenant-de-prueba' }),
+  });
+  assert.equal(res.status, 401);
+});
+
+test('POST /internal/distill-candidates con x-api-key incorrecto → 401', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': 'llave-incorrecta' },
+    body: JSON.stringify({ tenantId: 'tenant-de-prueba' }),
+  });
+  assert.equal(res.status, 401);
+});
+
+test('POST /internal/distill-candidates sin tenantId → 422, sin tocar la BD', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': M2M_API_KEY },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 422);
+  const body = await res.json();
+  assert.equal(body.error, 'Validation Failed');
+});

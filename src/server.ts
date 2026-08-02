@@ -28,6 +28,7 @@ import {
 import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
 import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
 import { getPartnerPackageEvalStatus } from './partners/partner-eval-status';
+import { runV2 } from './ingestion/candidate-poller';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -291,6 +292,49 @@ app.post('/internal/index-delta', async (c) => {
       return c.json({ error: 'Validation Failed', details: error.issues }, 422);
     }
     console.error('Error in /internal/index-delta:', error);
+    return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+// Ruta M2M para destilar los candidates 'pending' de un tenant (runV2 de
+// src/ingestion/candidate-poller.ts). Hasta ahora runV2 solo se alcanzaba desde el bloque
+// `require.main === module` de ese archivo, es decir por CLI a mano: en producción nadie lo
+// invocaba y `okf_concepts` se quedaba en 0. Mismo patrón de auth `x-api-key === M2M_API_KEY`
+// y mismo `indexerPool` (COLD_TIER_URL) que /internal/index-delta, que es el destino que ya
+// usaba el CLI.
+//
+// ⚠️ runV2 procesa en lotes hasta agotar los candidates pending, sin cota superior. Con un
+// backlog grande la petición puede exceder el timeout de Cloud Run y cortarse a media corrida.
+// Es idempotente (los candidates ya procesados quedan marcados y no se vuelven a reclamar), así
+// que reintentar es seguro, pero conviene acotar el lote antes de apuntarle un corpus grande.
+app.post('/internal/distill-candidates', async (c) => {
+  const M2M_API_KEY = process.env.M2M_API_KEY;
+  if (!M2M_API_KEY) {
+    console.error('M2M_API_KEY is not set. /internal/distill-candidates cannot authenticate requests.');
+    return c.json({ error: 'Server configuration error: M2M_API_KEY missing.' }, 500);
+  }
+
+  const apiKeyHeader = c.req.header('x-api-key');
+  if (apiKeyHeader !== M2M_API_KEY) {
+    return c.json({ error: 'Unauthorized: Invalid or missing x-api-key.' }, 401);
+  }
+
+  try {
+    const rawBody = await c.req.json();
+    const { tenantId } = z.object({ tenantId: z.string().min(1) }).parse(rawBody);
+
+    const store = new BundleStore({ tenantId });
+    const result = await runV2({ tenantId, pool: indexerPool, store });
+
+    console.log(
+      `[distill-candidates] tenant=${tenantId} drafted=${result.drafted} discarded=${result.discarded} errors=${result.errors}`
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: 'Validation Failed', details: error.issues }, 422);
+    }
+    console.error('Error in /internal/distill-candidates:', error);
     return c.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
