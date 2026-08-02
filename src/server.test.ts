@@ -191,3 +191,94 @@ Ver [otro concepto](${seededPath}).
     await pool.end();
   }
 });
+
+// /internal/distill-candidates — contrato de la ruta (auth y validación de entrada). El
+// comportamiento de runV2 en sí ya está cubierto contra Postgres en
+// src/ingestion/candidate-poller.test.ts; aquí solo se verifica que la ruta no deje pasar una
+// llamada sin credencial ni sin tenantId, porque destilar escribe en el bundle del tenant.
+
+test('POST /internal/distill-candidates sin x-api-key → 401', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenantId: 'tenant-de-prueba' }),
+  });
+  assert.equal(res.status, 401);
+});
+
+test('POST /internal/distill-candidates con x-api-key incorrecto → 401', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': 'llave-incorrecta' },
+    body: JSON.stringify({ tenantId: 'tenant-de-prueba' }),
+  });
+  assert.equal(res.status, 401);
+});
+
+test('POST /internal/distill-candidates sin tenantId → 422, sin tocar la BD', async () => {
+  const res = await app.request('/internal/distill-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': M2M_API_KEY },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 422);
+  const body = await res.json();
+  assert.equal(body.error, 'Validation Failed');
+});
+
+// Integración contra el Postgres local (docker-compose: pgvector/pgvector:pg16 en :5436, con las
+// migraciones aplicadas), mismo patrón que candidate-poller.test.ts. Siembra candidates mockup y
+// ejercita la RUTA, no runV2 directamente: es lo único que prueba que el cableado del servidor
+// (pool, BundleStore y LLMs simulados bajo NODE_ENV==='test') está bien hecho. En producción no
+// hay candidates que destilar, así que sembrar es la única forma de correr esto.
+const DISTILL_TENANT = 'test-distill-route';
+
+test('POST /internal/distill-candidates destila los candidates sembrados → 200 {drafted}', async () => {
+  const pool = new Pool({ connectionString: DATABASE_URL });
+
+  async function limpiar() {
+    await pool.query('DELETE FROM knowledge_candidates WHERE tenant_id = $1', [DISTILL_TENANT]);
+    await pool.query('DELETE FROM okf_provenance WHERE tenant_id = $1', [DISTILL_TENANT]);
+    await pool.query('DELETE FROM okf_concepts WHERE tenant_id = $1', [DISTILL_TENANT]);
+  }
+
+  try {
+    await limpiar();
+    for (const ref of ['conv:mockup-uno', 'conv:mockup-dos']) {
+      await pool.query(
+        `INSERT INTO knowledge_candidates (tenant_id, kind, source_ref, payload_summary, status)
+         VALUES ($1, 'conversation_closed', $2, $3, 'pending')`,
+        [DISTILL_TENANT, ref, `resumen mockup para ${ref}`]
+      );
+    }
+
+    const res = await app.request('/internal/distill-candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': M2M_API_KEY },
+      body: JSON.stringify({ tenantId: DISTILL_TENANT }),
+    });
+
+    assert.equal(res.status, 200);
+    const result = await res.json();
+    assert.equal(result.drafted, 2, 'los dos candidates sembrados deberían quedar drafted');
+    assert.equal(result.errors, 0);
+
+    const pendientes = await pool.query(
+      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE tenant_id = $1 AND status = 'pending'`,
+      [DISTILL_TENANT]
+    );
+    assert.equal(pendientes.rows[0].n, 0, 'no debería quedar ningún candidate pending');
+
+    // Segunda corrida: idempotente, ya no hay nada pendiente que reclamar.
+    const res2 = await app.request('/internal/distill-candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': M2M_API_KEY },
+      body: JSON.stringify({ tenantId: DISTILL_TENANT }),
+    });
+    assert.equal(res2.status, 200);
+    assert.deepEqual(await res2.json(), { drafted: 0, discarded: 0, errors: 0 });
+  } finally {
+    await limpiar();
+    await pool.end();
+  }
+});
