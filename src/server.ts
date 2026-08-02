@@ -29,6 +29,11 @@ import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerA
 import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
 import { getPartnerPackageEvalStatus } from './partners/partner-eval-status';
 import { runV2 } from './ingestion/candidate-poller';
+import { BundleStorageBackend } from './infrastructure/bundle-store';
+import { InMemoryStorageBackend } from './infrastructure/bundle-store.mock';
+import { DistillerLlm } from './ingestion/distiller-v2';
+import { PiiLlm } from './ingestion/pii-redactor';
+import { MockDistillerLlm, NoopPiiLlm } from './ingestion/llm.mock';
 
 export const app = new Hono();
 const gcsAdapter = new GcsStorageAdapter();
@@ -41,6 +46,21 @@ const indexerPool = new Pool({
 });
 const indexerEmbeddings: EmbeddingsClient =
   process.env.NODE_ENV === 'test' ? new MockEmbeddingsClient() : new GeminiEmbeddingsClient();
+
+// Dependencias de /internal/distill-candidates. Mismo criterio que indexerEmbeddings: mock SOLO
+// bajo NODE_ENV==='test'. En runtime quedan en `undefined` a propósito, que es como runV2 y
+// BundleStore piden sus valores reales (GeminiDistillerLlm, GeminiPiiLlm y GcsStorageBackend);
+// así el destilado en producción no depende de esta rama para nada.
+//
+// Sin esto la ruta no era ejercitable: construía siempre el BundleStore de GCS y dejaba que
+// distillCandidate cayera en Gemini, de modo que probarla con datos sembrados exigía red y
+// facturación.
+const distillStorage: BundleStorageBackend | undefined =
+  process.env.NODE_ENV === 'test' ? new InMemoryStorageBackend() : undefined;
+const distillerLlm: DistillerLlm | undefined =
+  process.env.NODE_ENV === 'test' ? new MockDistillerLlm() : undefined;
+const distillPiiLlm: PiiLlm | undefined =
+  process.env.NODE_ENV === 'test' ? new NoopPiiLlm() : undefined;
 
 // Initialize CompilerEngine.
 // El corpus (documents/chunks/ingest_jobs) vive en el Cold-Tier: ahí corrieron las migraciones
@@ -323,8 +343,14 @@ app.post('/internal/distill-candidates', async (c) => {
     const rawBody = await c.req.json();
     const { tenantId } = z.object({ tenantId: z.string().min(1) }).parse(rawBody);
 
-    const store = new BundleStore({ tenantId });
-    const result = await runV2({ tenantId, pool: indexerPool, store });
+    const store = new BundleStore({ tenantId, storage: distillStorage });
+    const result = await runV2({
+      tenantId,
+      pool: indexerPool,
+      store,
+      distillerLlm,
+      piiLlm: distillPiiLlm,
+    });
 
     console.log(
       `[distill-candidates] tenant=${tenantId} drafted=${result.drafted} discarded=${result.discarded} errors=${result.errors}`
