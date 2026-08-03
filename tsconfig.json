@@ -7,7 +7,13 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+
+    // Trinquete contra el patrón que dejó tools mintiendo en `success`: un `return`
+    // incondicional al inicio del cuerpo ("FALLBACK DE SUPERVIVENCIA") deja el resto
+    // inalcanzable, y sin esta bandera tsc no dice nada. Medido el 2026-08-03:
+    // activarlo no añade ni un error a este repo (0 antes, 0 después).
+    "allowUnreachableCode": false
   },
   "include": [
     "src/**/*"
