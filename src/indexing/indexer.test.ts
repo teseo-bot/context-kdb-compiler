@@ -72,6 +72,7 @@ function conceptContent(opts: {
   sources: string[];
   tags: string[];
   altitude?: number;
+  confidence?: 'draft' | 'reviewed' | 'consolidated';
 }): string {
   return matter.stringify(opts.body, {
     type: 'Insight',
@@ -80,7 +81,7 @@ function conceptContent(opts: {
     tags: opts.tags,
     timestamp: '2026-07-01T10:00:00.000Z',
     sources: opts.sources,
-    confidence: 'draft',
+    confidence: opts.confidence ?? 'draft',
     pii: 'clean',
     altitude: opts.altitude ?? 2,
   });
@@ -94,7 +95,8 @@ const RUN_ID = randomUUID().slice(0, 8);
 const TENANT_SEED = `k3w2-seed-${RUN_ID}`;
 const TENANT_RERUN = `k3w2-rerun-${RUN_ID}`;
 const TENANT_MODIFY = `k3w2-modify-${RUN_ID}`;
-const ALL_TEST_TENANTS = [TENANT_SEED, TENANT_RERUN, TENANT_MODIFY];
+const TENANT_ORIGIN = `d21013-origin-${RUN_ID}`;
+const ALL_TEST_TENANTS = [TENANT_SEED, TENANT_RERUN, TENANT_MODIFY, TENANT_ORIGIN];
 
 let pool: Pool;
 
@@ -173,12 +175,15 @@ test('indexDelta: 3 conceptos nuevos en c-comercial/ -> indexed>=3, skipped:0; f
     }
 
     const edges = await client.query(
-      `SELECT from_path, to_path FROM okf_edges WHERE tenant_id = $1`,
+      `SELECT from_path, to_path, origin FROM okf_edges WHERE tenant_id = $1`,
       [TENANT_SEED]
     );
     assert.equal(edges.rows.length, 1);
     assert.equal(edges.rows[0].from_path, 'c-comercial/concepto-uno.md');
     assert.equal(edges.rows[0].to_path, 'f-finanzas/otro.md');
+    // ADR-210 D-210.13: el concepto es confidence:'draft' (nadie lo ha revisado), así que su
+    // arista es una inferencia del destilador, no un vínculo explícito en la fuente.
+    assert.equal(edges.rows[0].origin, 'INFERRED');
 
     const provenance = await client.query(
       `SELECT concept_path, source_ref FROM okf_provenance WHERE tenant_id = $1 ORDER BY concept_path, source_ref`,
@@ -288,4 +293,79 @@ test('indexDelta: modificar 1 archivo (nueva generation en el mock) -> indexed:1
     await client.query('RESET app.tenant_id');
     client.release();
   }
+});
+
+// ── ADR-210 D-210.13: confianza explícita en la arista ─────────────────────────────────────
+//
+// Lo que este test protege no es la columna, es la CONDICIÓN DE TIEMPO que la motiva: una vez
+// que el destilador escriba aristas sin marca, separarlas a posteriori es imposible sin
+// re-destilar el corpus. Verifica las dos direcciones (un draft no puede pasar por extraído, y
+// un concepto revisado no se queda marcado como inferencia) y, sobre todo, que la promoción
+// editorial ASCIENDE la arista existente al reindexar — que es lo que hace que la marca sea
+// mantenible sin un paso operativo aparte.
+test('D-210.13: origin de la arista sigue a confidence del concepto, y la promoción editorial la asciende', async () => {
+  const backend = new InMemoryStorageBackend();
+  const store = new BundleStore({ tenantId: TENANT_ORIGIN, storage: backend });
+  const embeddings = new MockEmbeddingsClient768();
+
+  const body = 'Cuerpo con un vínculo a [otro concepto](/f-finanzas/otro.md).';
+  const draftArgs = {
+    title: 'Salido del destilador',
+    description: 'Nadie lo ha revisado todavía',
+    body,
+    sources: ['conv:origin-1'],
+    tags: ['c-comercial', 'ventas'],
+  };
+
+  // Un concepto en 'draft' (el estado en que el destilador L1 deja todo) junto a uno que un
+  // humano ya endosó: las dos marcas tienen que convivir en la misma corrida.
+  backend.seed('c-comercial/inferido.md', conceptContent(draftArgs));
+  backend.seed(
+    'c-comercial/extraido.md',
+    conceptContent({
+      ...draftArgs,
+      title: 'Revisado por un humano',
+      description: 'Un curador lo endosó',
+      sources: ['conv:origin-2'],
+      confidence: 'reviewed',
+    })
+  );
+
+  await indexDelta(TENANT_ORIGIN, { pool, store, embeddings });
+
+  const readOrigins = async (): Promise<Map<string, string>> => {
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT set_config($1, $2, false)', ['app.tenant_id', TENANT_ORIGIN]);
+      const { rows } = await client.query(
+        `SELECT from_path, origin FROM okf_edges WHERE tenant_id = $1`,
+        [TENANT_ORIGIN]
+      );
+      return new Map(rows.map((r: any) => [r.from_path, r.origin]));
+    } finally {
+      await client.query('RESET app.tenant_id');
+      client.release();
+    }
+  };
+
+  const before = await readOrigins();
+  assert.equal(before.get('c-comercial/inferido.md'), 'INFERRED');
+  assert.equal(before.get('c-comercial/extraido.md'), 'EXTRACTED');
+
+  // Promoción editorial: el mismo concepto, ahora endosado. El bundle es append-only, así que
+  // esto es una generation nueva y el delta lo reindexa.
+  backend.seed(
+    'c-comercial/inferido.md',
+    conceptContent({ ...draftArgs, confidence: 'consolidated' })
+  );
+
+  await indexDelta(TENANT_ORIGIN, { pool, store, embeddings });
+
+  const after = await readOrigins();
+  assert.equal(
+    after.get('c-comercial/inferido.md'),
+    'EXTRACTED',
+    'promover el concepto debe ascender su arista en el reindexado, sin paso operativo extra'
+  );
+  assert.equal(after.get('c-comercial/extraido.md'), 'EXTRACTED');
 });
