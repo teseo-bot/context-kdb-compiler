@@ -54,6 +54,33 @@ export interface IndexerDeps {
 const INDEX_MD_ALTITUDE = 3;
 const ROOT_SYSTEM_SLUG = '_root';
 
+/**
+ * ADR-210 D-210.13 — confianza explícita en la arista: EXTRACTED vs INFERRED.
+ *
+ * Duplicado consciente de contracts/src/okf.ts (`okfEdgeOrigin`), por el mismo motivo ya
+ * documentado en infrastructure/concept-frontmatter.schema.ts: @teseo/contracts no es
+ * dependencia npm del compiler y el import relativo rompe `tsc --noEmit` con TS6059.
+ *
+ * Las aristas no las emite el destilador: se materializan de los cross-links markdown del
+ * cuerpo (extractCrossLinks, más abajo). Este módulo lee un objeto de GCS y no sabe quién
+ * escribió ese cuerpo, así que la marca tiene que derivarse de algo que viaje en el propio
+ * artefacto. `frontmatter.confidence` ya es exactamente esa señal:
+ *
+ *   · 'draft'                     → salió del destilador L1 y nadie lo revisó ⇒ INFERRED.
+ *   · 'reviewed' | 'consolidated' → un humano lo endosó ⇒ EXTRACTED.
+ *   · null (los index.md, plantillas de navegación de K2-W2, que no llevan frontmatter de
+ *     concepto) ⇒ EXTRACTED: son estructura definida a mano, no inferencia.
+ *
+ * El endoso humano es la misma semántica que ADR-203 vende como "certificado", así que
+ * promover editorialmente un concepto promueve sus aristas en el siguiente reindexado, sin
+ * paso operativo extra.
+ */
+type EdgeOrigin = 'EXTRACTED' | 'INFERRED';
+
+function edgeOriginFor(confidence: unknown): EdgeOrigin {
+  return confidence === 'draft' ? 'INFERRED' : 'EXTRACTED';
+}
+
 interface ListedObject {
   path: string;
   generation: bigint;
@@ -182,12 +209,15 @@ async function indexSingleConcept(
   // las extraídas del cuerpo actual.
   await client.query('DELETE FROM okf_edges WHERE tenant_id = $1 AND from_path = $2', [tenantId, path]);
   const crossLinks = extractCrossLinks(bodyText);
+  // Los index.md no llevan frontmatter de concepto (ver `frontmatter` arriba, que para ellos
+  // es {}), así que su confidence es null por construcción, no por dato ausente.
+  const origin = edgeOriginFor(isIndexMd ? null : frontmatter.confidence);
   for (const toPath of crossLinks) {
     await client.query(
-      `INSERT INTO okf_edges (tenant_id, from_path, to_path)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id, from_path, to_path) DO NOTHING`,
-      [tenantId, path, toPath]
+      `INSERT INTO okf_edges (tenant_id, from_path, to_path, origin)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, from_path, to_path) DO UPDATE SET origin = EXCLUDED.origin`,
+      [tenantId, path, toPath, origin]
     );
   }
 

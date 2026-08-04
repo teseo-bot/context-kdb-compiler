@@ -247,12 +247,22 @@ test("PA2-W4 (a): publish de 3 conceptos → 3 filas en okf_partner_concepts + m
     }
 
     const edges = await pool.query(
-      'SELECT from_path, to_path FROM okf_partner_edges WHERE package_id = $1',
+      'SELECT from_path, to_path, origin FROM okf_partner_edges WHERE package_id = $1',
       [packageId]
     );
     assert.equal(edges.rows.length, 1, '1 arista intra-paquete desde el cross-link');
     assert.equal(edges.rows[0].from_path, `@${PARTNER_SLUG}/l-legal/clausula-limitacion.md`);
     assert.equal(edges.rows[0].to_path, `@${PARTNER_SLUG}/l-legal/clausula-confidencialidad.md`);
+    // ADR-210 D-210.13 — decisión deliberada, no un descuido: en el plano de aliados
+    // `confidence` no lleva información (todo draft se fuerza a 'draft' y el publish promueve
+    // todo a 'reviewed'), así que derivar la marca de ahí sellaría EXTRACTED cada arista por
+    // el mero hecho de publicar. Se marca la que NO sobre-afirma hasta que el flujo de
+    // curaduría gane una afirmación real por-arista. Ver PARTNER_EDGE_ORIGIN en publisher.ts.
+    assert.equal(
+      edges.rows[0].origin,
+      'INFERRED',
+      'una arista de paquete no puede presentarse como extraída sin que un curador lo afirme'
+    );
 
     const written = await store.read(`paquetes/${packageSlug}/clausula-limitacion.md`);
     assert.ok(written, 'concepto escrito en paquetes/{slug}/');

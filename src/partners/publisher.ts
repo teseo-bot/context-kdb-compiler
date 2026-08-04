@@ -286,6 +286,28 @@ async function readAndValidateDrafts(
   });
 }
 
+/**
+ * ADR-210 D-210.13 — origen de las aristas del plano de ALIADOS.
+ *
+ * En el plano del tenant la marca se deriva de `frontmatter.confidence` (ver
+ * src/indexing/indexer.ts). Aquí NO se puede: en este plano `confidence` no lleva
+ * información. `partner-draft-update.ts` fuerza todo draft a 'draft', y este mismo módulo
+ * (línea ~169 y §2c) promueve TODO lo publicado a 'reviewed'. Derivar de ese campo marcaría
+ * EXTRACTED cada arista del paquete por el mero hecho de publicarlo — incluidas las que
+ * sugirió el LLM de partner-assist.ts. Un sello de goma sobre justo el plano que ADR-203
+ * vende como conocimiento CERTIFICADO: el pasivo exacto que esta columna existe para evitar.
+ *
+ * Así que se marca INFERRED, que es la marca que NO sobre-afirma, hasta que el flujo de
+ * curaduría gane una afirmación real por-arista (el curador declarando que el enlace estaba
+ * explícito en la fuente). Esto deja el hueco VISIBLE para el sello de curaduría (PA5-W5) y
+ * el gate de eval (PA7-W2) en vez de taparlo con una marca que nadie respalda.
+ *
+ * Es una decisión de producto pendiente, no una limitación técnica: el día que exista esa
+ * afirmación, esta constante se sustituye por el valor por-arista y el corpus se reindexa
+ * publicando de nuevo — sin re-destilar, que es el punto de guardar la marca como columna.
+ */
+const PARTNER_EDGE_ORIGIN = 'INFERRED';
+
 interface ConceptDbRow {
   path: string; // lógico: @{partner_slug}/{system}/{slug}.md
   gcs_path: string;
@@ -337,10 +359,10 @@ async function writeIndexDeltaTx(
 
     for (const edge of edges) {
       await client.query(
-        `INSERT INTO okf_partner_edges (package_id, from_path, to_path)
-         VALUES ($1,$2,$3)
-         ON CONFLICT (package_id, from_path, to_path) DO NOTHING`,
-        [packageId, edge.from_path, edge.to_path]
+        `INSERT INTO okf_partner_edges (package_id, from_path, to_path, origin)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (package_id, from_path, to_path) DO UPDATE SET origin = EXCLUDED.origin`,
+        [packageId, edge.from_path, edge.to_path, PARTNER_EDGE_ORIGIN]
       );
     }
 
