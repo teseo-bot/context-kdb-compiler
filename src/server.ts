@@ -324,12 +324,20 @@ app.post('/internal/index-delta', async (c) => {
   }
 });
 
-// Ruta M2M para destilar los candidates 'pending' de un tenant (runV2 de
+// Ruta M2M para descubrir y destilar los candidates de un tenant (runV2 de
 // src/ingestion/candidate-poller.ts). Hasta ahora runV2 solo se alcanzaba desde el bloque
 // `require.main === module` de ese archivo, es decir por CLI a mano: en producción nadie lo
 // invocaba y `okf_concepts` se quedaba en 0. Mismo patrón de auth `x-api-key === M2M_API_KEY`
 // y mismo `indexerPool` (COLD_TIER_URL) que /internal/index-delta, que es el destino que ya
 // usaba el CLI.
+//
+// runV2 arranca por el paso 0: descubre documentos del plano que aún no tienen candidate y
+// los encola. Antes ese paso estaba detrás de `opts.supabase`, una llave que esta ruta nunca
+// pasó y que sólo abría una fuente contra Supabase (retirado por ADR-206) — así que la mitad
+// viva quedaba inalcanzable de rebote. El descubrimiento es idempotente.
+//
+// ⚠️ La otra entrada de candidates NO pasa por aquí: las conversaciones cerradas las escribe
+// el emisor push del orquestador (`emitCandidate`), que hoy no tiene ningún call site.
 //
 // ⚠️ runV2 procesa en lotes hasta agotar los candidates pending, sin cota superior. Con un
 // backlog grande la petición puede exceder el timeout de Cloud Run y cortarse a media corrida.

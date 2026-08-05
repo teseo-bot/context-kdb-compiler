@@ -276,7 +276,9 @@ test('POST /internal/distill-candidates destila los candidates sembrados → 200
       body: JSON.stringify({ tenantId: DISTILL_TENANT }),
     });
     assert.equal(res2.status, 200);
-    assert.deepEqual(await res2.json(), { drafted: 0, discarded: 0, errors: 0 });
+    // `discovered` viaja siempre en la respuesta: el paso 0 dejó de estar detrás de
+    // `opts.supabase`. Este tenant no siembra documentos, así que descubre 0.
+    assert.deepEqual(await res2.json(), { drafted: 0, discarded: 0, errors: 0, discovered: { documents: 0 } });
   } finally {
     await limpiar();
     await pool.end();
