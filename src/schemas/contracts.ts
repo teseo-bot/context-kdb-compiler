@@ -74,6 +74,16 @@ export const IngestRequestV1Schema = z.object({
   // K9-W1 (SPEC-K9 §2.2): sesgo HOCFLIT de origen, opcional. Se persiste en
   // documents.metadata.hocflit_hint por cada documento del request.
   hocflit_hint: HocflitHintSchema.optional(),
+  // ADR-215 WU-4.4: marcas a las que pertenece el material de este request.
+  //
+  // ⚠️ Va como HERMANO de `hocflit_hint`, NUNCA dentro ([INV-215.4]). El hint es el eje de la
+  // taxonomía HOCFLIT (sistema + altitud); la marca es un eje NUEVO y ortogonal. Meterla
+  // dentro del hint las conflaría, y conflar ejes ya costó una corrección en este programa.
+  //
+  // AUSENTE o VACÍO = COMPARTIDO, visible para todas las marcas ([INV-215.5]). No es un
+  // descuido del cliente: es el default correcto, y el que preserva el retargeting. Por eso
+  // el campo es opcional y no tiene default no-vacío.
+  brand_slugs: z.array(z.string()).optional(),
 });
 
 export type IngestDocument = z.infer<typeof IngestDocumentSchema>;
