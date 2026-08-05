@@ -118,7 +118,7 @@ app.post('/v1/ingest', async (c) => {
     const rawBody = await c.req.json();
     const parsedRequest = IngestRequestV1Schema.parse(rawBody);
 
-    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible, hocflit_hint } = parsedRequest;
+    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible, hocflit_hint, brand_slugs } = parsedRequest;
 
     // E11-H3: Store ingestion job details in a new 'ingest_jobs' table
     // This is a conceptual call; actual implementation would use a DB client
@@ -158,6 +158,10 @@ app.post('/v1/ingest', async (c) => {
           // Spread después de doc.metadata para que el hint del request gane si hubiera choque
           // de clave, sin romper el shape existente de metadata por documento.
           ...(hocflit_hint ? { hocflit_hint } : {}),
+          // ADR-215 WU-4.4: la marca NO viaja dentro de metadata — compile() la extrae y la
+          // escribe en la COLUMNA `brand_slugs` de documents y chunks, que es lo que filtra
+          // la recuperación. Dentro del JSON de metadata sería invisible para el WHERE.
+          ...(brand_slugs ? { brandSlugs: brand_slugs } : {}),
         });
         // In a real system, each document compilation might update the job status
       } catch (docError) {
