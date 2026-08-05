@@ -24,7 +24,7 @@ import { Pool, PoolClient } from 'pg';
 import { BundleStore } from '../infrastructure/bundle-store';
 import { DraftConceptSchema, DraftConcept } from '../infrastructure/concept-frontmatter.schema';
 import { HocflitHint, HocflitHintSchema } from '../schemas/contracts';
-import { discoverCandidates, DiscoverCandidatesResult, SupabaseRestConfig } from './candidate-discovery';
+import { discoverCandidates, DiscoverCandidatesResult } from './candidate-discovery';
 import { distillCandidate, DistillerLlm, DistillCandidateInput } from './distiller-v2';
 import { buildTargetPath, resolveCollision } from './hocflit-router';
 import { redactPii, PiiLlm } from './pii-redactor';
@@ -64,19 +64,13 @@ export interface RunV2Options {
   distillerLlm?: DistillerLlm;
   piiLlm?: PiiLlm;
   resolveRawContent?: (candidate: CandidateRow) => Promise<string>;
-  // K4-W4 v2: paso 0 opcional de descubrimiento pull (Supabase leads cerrados + documents
-  // del Cold-Tier sin candidate). Si se omite, runV2 se comporta exactamente igual que antes
-  // (K4-W2/K4-W3): solo procesa candidates ya existentes en knowledge_candidates.
-  supabase?: SupabaseRestConfig;
-  sinceDays?: number;
 }
 
 export interface RunV2Result {
   drafted: number;
   discarded: number;
   errors: number;
-  // Presente solo si opts.supabase fue provisto (paso 0 ejecutado).
-  discovered?: DiscoverCandidatesResult;
+  discovered: DiscoverCandidatesResult;
 }
 
 /**
@@ -277,19 +271,14 @@ async function markStatus(
  * ver/tocar filas del tenant) y RESET app.tenant_id al devolver la conexión.
  */
 export async function runV2(opts: RunV2Options): Promise<RunV2Result> {
-  const result: RunV2Result = { drafted: 0, discarded: 0, errors: 0 };
+  // Paso 0 (K4-W4 v2): descubrimiento pull. Ya NO es condicional. Lo era por `opts.supabase`,
+  // una llave que sólo abría la fuente de conversaciones de Supabase —sistema retirado por
+  // ADR-206— y que de paso mantenía inalcanzable la fuente viva, los documentos sin candidate.
+  // Ver la cabecera de candidate-discovery.ts. Es idempotente: los documentos que ya tienen
+  // candidate no se re-descubren, así que correrlo en cada corrida es seguro.
+  const discovered = await discoverCandidates({ tenantId: opts.tenantId, coldPool: opts.pool });
 
-  // Paso 0 opcional (K4-W4 v2): descubrimiento pull. Solo corre si opts.supabase fue
-  // provisto explícitamente; no afecta la firma ni el comportamiento de llamadas existentes
-  // (K4-W2/K4-W3) que no lo pasan.
-  if (opts.supabase) {
-    result.discovered = await discoverCandidates({
-      tenantId: opts.tenantId,
-      coldPool: opts.pool,
-      supabase: opts.supabase,
-      sinceDays: opts.sinceDays,
-    });
-  }
+  const result: RunV2Result = { drafted: 0, discarded: 0, errors: 0, discovered };
 
   // eslint-disable-next-line no-constant-condition
   while (true) {

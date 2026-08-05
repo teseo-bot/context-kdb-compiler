@@ -191,7 +191,10 @@ test('K4-W2 candidate-poller: runV2 procesa candidates, descarta duplicados y es
       piiLlm: noopPiiLlm,
     });
 
-    assert.deepEqual(result, { drafted: 2, discarded: 1, errors: 0 });
+    // `discovered` ahora siempre viene: el paso 0 dejó de ser condicional. Este tenant no
+    // siembra documentos, así que descubre 0 — pero que el campo esté es la prueba de que el
+    // descubrimiento corre en cada runV2, que antes no pasaba nunca.
+    assert.deepEqual(result, { drafted: 2, discarded: 1, errors: 0, discovered: { documents: 0 } });
 
     // 2 archivos en _staging/{hoy}/ en el storage simulado.
     const today = new Date().toISOString().slice(0, 10);
@@ -224,7 +227,7 @@ test('K4-W2 candidate-poller: runV2 procesa candidates, descarta duplicados y es
       distillerLlm: makeFixedDistillerLlm(),
       piiLlm: noopPiiLlm,
     });
-    assert.deepEqual(secondResult, { drafted: 0, discarded: 0, errors: 0 });
+    assert.deepEqual(secondResult, { drafted: 0, discarded: 0, errors: 0, discovered: { documents: 0 } });
 
     // No se agregaron archivos nuevos a _staging tras la re-corrida.
     const stagedFilesAfterRerun = await store.list(`_staging/${today}/`);
