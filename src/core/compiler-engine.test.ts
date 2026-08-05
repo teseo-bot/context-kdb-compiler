@@ -121,3 +121,89 @@ test('compile(): idempotente por (tenant, hash) — no duplica el documento', as
   );
   assert.equal(count.rows[0].n, 1);
 });
+
+// ── ADR-215 WU-4.4: la marca del documento baja a su columna, y los chunks la heredan ──────
+
+const DOC_MARCA = `# Capacidades de automatizacion
+El motor de agentes procesa ordenes de carga sin intervencion humana.
+La integracion con el TMS del cliente es por API y tarda menos de un dia.
+El SLA de respuesta es de dos segundos por consulta en horario habil.
+Cada agente registra su traza completa para auditoria posterior.`;
+
+const DOC_COMPARTIDO = `# Dolores del sector transporte
+Los transportistas medianos pierden margen por tiempos muertos en patio.
+La falta de visibilidad de la flota impide prometer ventanas de entrega.
+El costo de combustible representa la mayor partida variable del negocio.
+La rotacion de operadores encarece cada contratacion nueva del año.`;
+
+test('compile(): brandSlugs baja a la COLUMNA de documents y los chunks la heredan', async (t) => {
+  if (!dbReady || !engine) return t.skip('Postgres no disponible');
+
+  const res = await engine.compile(DOC_MARCA, {
+    title: 'CARGALO_CAPACIDADES',
+    tenantId: TENANT,
+    brandSlugs: ['cargalo'],
+  });
+
+  const doc = await admin.query('SELECT brand_slugs, metadata FROM documents WHERE id = $1', [res.documentId]);
+  assert.deepEqual(doc.rows[0].brand_slugs, ['cargalo']);
+
+  // La marca NO se duplica dentro del JSON de metadata: viviría en dos sitios y divergirían.
+  assert.equal(doc.rows[0].metadata?.brandSlugs, undefined);
+
+  const chunks = await admin.query('SELECT brand_slugs FROM chunks WHERE document_id = $1', [res.documentId]);
+  assert.equal(chunks.rows.length, res.chunkCount);
+  for (const r of chunks.rows) {
+    assert.deepEqual(r.brand_slugs, ['cargalo'], 'cada chunk hereda la marca del documento');
+  }
+});
+
+test('compile(): sin brandSlugs el documento queda COMPARTIDO — array vacío, no nulo [INV-215.5]', async (t) => {
+  if (!dbReady || !engine) return t.skip('Postgres no disponible');
+
+  const res = await engine.compile(DOC_COMPARTIDO, { title: 'SECTOR_DOLORES', tenantId: TENANT });
+
+  const doc = await admin.query('SELECT brand_slugs FROM documents WHERE id = $1', [res.documentId]);
+  assert.deepEqual(doc.rows[0].brand_slugs, [], 'sin etiqueta = compartido, y NUNCA null');
+
+  const chunks = await admin.query('SELECT brand_slugs FROM chunks WHERE document_id = $1', [res.documentId]);
+  for (const r of chunks.rows) assert.deepEqual(r.brand_slugs, []);
+});
+
+test('compile(): las marcas se normalizan — minúsculas, sin vacíos, sin duplicados, ordenadas', async (t) => {
+  if (!dbReady || !engine) return t.skip('Postgres no disponible');
+
+  const res = await engine.compile(DOC_MARCA + '\nLinea extra para cambiar el hash del documento.', {
+    title: 'NORMALIZACION',
+    tenantId: TENANT,
+    brandSlugs: ['  Fleetco ', 'fleetco', '', 'CARGALO'],
+  });
+
+  const doc = await admin.query('SELECT brand_slugs FROM documents WHERE id = $1', [res.documentId]);
+  assert.deepEqual(doc.rows[0].brand_slugs, ['cargalo', 'fleetco'],
+    'dos formas de teclear la misma marca deben producir la MISMA fila, o filtrarían distinto');
+});
+
+test('el filtro de recuperación aísla las marcas y respeta lo compartido', async (t) => {
+  if (!dbReady || !engine) return t.skip('Postgres no disponible');
+
+  // `&&` y no `= ANY`: medido con EXPLAIN, `= ANY` no usa el índice GIN (migración 013).
+  const visto = async (marca: string) => {
+    const r = await admin.query(
+      `SELECT count(*)::int AS n FROM chunks
+        WHERE tenant_id = $1 AND (brand_slugs = '{}' OR brand_slugs && ARRAY[$2]::text[])`,
+      [TENANT, marca]
+    );
+    return r.rows[0].n;
+  };
+  const total = await admin.query('SELECT count(*)::int AS n FROM chunks WHERE tenant_id = $1', [TENANT]);
+  const soloCargalo = await admin.query(
+    `SELECT count(*)::int AS n FROM chunks WHERE tenant_id = $1 AND brand_slugs = ARRAY['cargalo']::text[]`,
+    [TENANT]
+  );
+
+  const vistoFleetco = await visto('fleetco');
+  assert.ok(soloCargalo.rows[0].n > 0, 'el sembrado debe tener chunks exclusivos de cargalo');
+  assert.equal(vistoFleetco, total.rows[0].n - soloCargalo.rows[0].n,
+    'fleetco ve todo MENOS lo exclusivo de cargalo');
+});

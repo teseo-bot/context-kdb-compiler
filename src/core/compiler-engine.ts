@@ -14,7 +14,27 @@ export interface CompilerOptions {
 export interface DocumentMetadata {
   title: string;
   source?: string;
+  /**
+   * ADR-215 WU-4.4 — marcas a las que pertenece el documento.
+   *
+   * Se extrae ANTES de serializar `metadata` a JSON y se escribe en la COLUMNA `brand_slugs`
+   * de `documents` y `chunks`. Dentro del JSON sería invisible para el `WHERE` de la
+   * recuperación, que es el único sitio donde la marca sirve para algo.
+   *
+   * Ausente o vacío = COMPARTIDO, visible para todas las marcas ([INV-215.5]).
+   */
+  brandSlugs?: string[];
   [key: string]: any;
+}
+
+/**
+ * Normaliza las marcas: minúsculas, sin espacios, sin vacíos, sin duplicados y en orden
+ * estable. Un `['Fleetco', 'fleetco', '']` tecleado a mano y un `['fleetco']` deben producir
+ * exactamente la misma fila — si no, dos documentos idénticos filtrarían distinto.
+ */
+function normalizeBrandSlugs(input?: string[]): string[] {
+  if (!input || input.length === 0) return [];
+  return Array.from(new Set(input.map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0))).sort();
 }
 
 export interface CompileResult {
@@ -125,9 +145,14 @@ export class CompilerEngine {
         await client.query('BEGIN');
 
         // 2. Insert Document
+        // ADR-215 WU-4.4: `brandSlugs` sale de metadata ANTES de serializar — va a su propia
+        // columna, no al JSON. Guardarlo en los dos sitios invitaría a que divergieran.
+        const { brandSlugs: _brandSlugsRaw, ...metadataSinMarca } = metadata;
+        const brandSlugs = normalizeBrandSlugs(metadata.brandSlugs);
+
         const docRes = await client.query(
-          'INSERT INTO documents (document_hash, content, metadata, tenant_id) VALUES ($1, $2, $3, $4) RETURNING id',
-          [hash, markdown, JSON.stringify(metadata), tenantId]
+          'INSERT INTO documents (document_hash, content, metadata, tenant_id, brand_slugs) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+          [hash, markdown, JSON.stringify(metadataSinMarca), tenantId, brandSlugs]
         );
         const documentId = docRes.rows[0].id;
 
@@ -154,10 +179,14 @@ export class CompilerEngine {
         // `document_id` es UUID (migración 001), no int: el cast debe ser `::uuid[]`. Con `::int[]`
         // el INSERT reventaba en cuanto compile() por fin escribía en un esquema real —bug apilado
         // detrás del de la BD equivocada; nunca se ejecutó porque /v1/ingest no llegaba hasta aquí.
+        // ADR-215 WU-4.4: los chunks HEREDAN la marca del documento. No se pasa por UNNEST
+        // —sería el mismo array repetido n veces, y un text[] dentro de UNNEST se aplana— sino
+        // como constante del SELECT: todos los chunks de un documento comparten su marca por
+        // definición.
         await client.query(`
-          INSERT INTO chunks (document_id, chunk_index, chunk_text, embedding, tenant_id)
-          SELECT * FROM UNNEST ($1::uuid[], $2::int[], $3::text[], $4::vector[], $5::text[])
-        `, [documentIds, chunkIndexes, chunkTexts, embeddingStrs, tenantIds]);
+          INSERT INTO chunks (document_id, chunk_index, chunk_text, embedding, tenant_id, brand_slugs)
+          SELECT *, $6::text[] FROM UNNEST ($1::uuid[], $2::int[], $3::text[], $4::vector[], $5::text[])
+        `, [documentIds, chunkIndexes, chunkTexts, embeddingStrs, tenantIds, brandSlugs]);
 
         await client.query('COMMIT');
 
