@@ -9,7 +9,9 @@ export E2E_BUNDLE_DIR="${E2E_BUNDLE_DIR:-/tmp/kdb-e2e/${E2E_TENANT}}"
 export COLD_TIER_URL="${COLD_TIER_URL:-postgres://postgres:postgres@localhost:5436/postgres}"
 export E2E_OLLAMA_MODEL="${E2E_OLLAMA_MODEL:-gemma4:12b}"
 
-ROOT="/Users/teseohome/Teseo_AI"
+# Derivado de la ubicación del script: <ROOT>/context-kdb-compiler/scripts/e2e/
+# Así el harness sobrevive a que se renombre o se mueva la carpeta raíz.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPILER="$ROOT/context-kdb-compiler"
 NIGHTWORKER="$ROOT/night-worker"
 
