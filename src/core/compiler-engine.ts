@@ -3,6 +3,7 @@ import { Pool, PoolClient } from 'pg';
 import { chunkTextSemantic } from './semantic-chunker';
 import { EmbeddingsClient, GeminiEmbeddingsClient } from '../infrastructure/embeddings';
 import { MockEmbeddingsClient } from '../infrastructure/embeddings.mock';
+import { normalizeBrandSlugs } from '../infrastructure/brand-slugs';
 
 export interface CompilerOptions {
   dbUrl?: string; // e.g. postgres://user:pass@localhost:5436/dbname
@@ -27,15 +28,8 @@ export interface DocumentMetadata {
   [key: string]: any;
 }
 
-/**
- * Normaliza las marcas: minúsculas, sin espacios, sin vacíos, sin duplicados y en orden
- * estable. Un `['Fleetco', 'fleetco', '']` tecleado a mano y un `['fleetco']` deben producir
- * exactamente la misma fila — si no, dos documentos idénticos filtrarían distinto.
- */
-function normalizeBrandSlugs(input?: string[]): string[] {
-  if (!input || input.length === 0) return [];
-  return Array.from(new Set(input.map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0))).sort();
-}
+// WU-4.4: `normalizeBrandSlugs` se movió a `infrastructure/brand-slugs.ts` al aparecer el segundo
+// consumidor (el indexador OKF). Ver allí por qué vive en un solo sitio.
 
 export interface CompileResult {
   documentId: string; // uuid — `documents.id` es UUID (migración 001), no un serial int

@@ -23,6 +23,7 @@ import matter from 'gray-matter';
 import { BundleStore, FRONTMATTER_YAML_ENGINE } from '../infrastructure/bundle-store';
 import { EmbeddingsClient } from '../infrastructure/embeddings';
 import { HOCFLIT_SYSTEMS } from '../infrastructure/concept-frontmatter.schema';
+import { normalizeBrandSlugs } from '../infrastructure/brand-slugs';
 
 const MAX_EMBED_INPUT_CHARS = 8000;
 const CROSS_LINK_REGEX = /\]\((\/[a-z0-9-]+\/[a-z0-9-]+\.md)\)/g;
@@ -79,6 +80,26 @@ type EdgeOrigin = 'EXTRACTED' | 'INFERRED';
 
 function edgeOriginFor(confidence: unknown): EdgeOrigin {
   return confidence === 'draft' ? 'INFERRED' : 'EXTRACTED';
+}
+
+/**
+ * ADR-215 WU-4.4 — la MARCA de un concepto OKF, derivada de `frontmatter.brands`.
+ *
+ * Mismo razonamiento que `edgeOriginFor` justo arriba: este módulo lee un objeto de GCS y no
+ * sabe quién escribió el cuerpo, así que la marca debe viajar en el propio artefacto. `brands`
+ * es esa señal, y se normaliza con el MISMO helper que usa la ingesta de documentos
+ * (`normalizeBrandSlugs`) para que un concepto no filtre distinto según por dónde entró.
+ *
+ * Ausente, vacío o mal tecleado ⇒ `[]` = COMPARTIDO, visible para todas las marcas [INV-215.5].
+ *
+ * Los `index.md` van SIEMPRE compartidos, y a propósito: su `frontmatter` se fuerza a `{}` unas
+ * líneas más abajo porque son plantillas de navegación (K2-W2), no conceptos. Y es lo correcto
+ * además de lo que sale solo — un índice con marca escondería TODOS sus hijos a la otra marca,
+ * incluidos los compartidos. El índice es el andamio; la marca vive en las hojas, que el lector
+ * filtra una por una (orquestador, WU-4.3).
+ */
+function brandSlugsFor(brands: unknown): string[] {
+  return normalizeBrandSlugs(brands);
 }
 
 interface ListedObject {
@@ -172,6 +193,9 @@ async function indexSingleConcept(
       ? frontmatter.altitude
       : INDEX_MD_ALTITUDE;
   const systemSlug = systemSlugForPath(path);
+  // WU-4.4: `frontmatter` ya es `{}` para los index.md, así que esto les da [] = compartido por
+  // construcción, no por dato ausente — el mismo criterio que `origin` unas líneas abajo.
+  const brandSlugs = brandSlugsFor(frontmatter.brands);
 
   const embedInput = `${title}\n${description}\n${bodyText}`.slice(0, MAX_EMBED_INPUT_CHARS);
   const [embedding] = await embeddings.embed([embedInput]);
@@ -180,9 +204,12 @@ async function indexSingleConcept(
   const contentSha256 = createHash('sha256').update(content, 'utf8').digest('hex');
 
   await client.query(
+    // WU-4.4: $1..$10 — DIEZ marcadores, DIEZ elementos. `brand_slugs` va también en el DO UPDATE:
+    // sin eso, reetiquetar un concepto y reindexarlo dejaría la marca vieja en la fila, y el
+    // reindexado es precisamente el camino por el que se corrige una marca mal puesta.
     `INSERT INTO okf_concepts
-       (tenant_id, path, frontmatter, body_text, embedding, content_sha256, gcs_generation, altitude, system_slug, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+       (tenant_id, path, frontmatter, body_text, embedding, content_sha256, gcs_generation, altitude, system_slug, brand_slugs, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
      ON CONFLICT (tenant_id, path) DO UPDATE SET
        frontmatter = EXCLUDED.frontmatter,
        body_text = EXCLUDED.body_text,
@@ -191,6 +218,7 @@ async function indexSingleConcept(
        gcs_generation = EXCLUDED.gcs_generation,
        altitude = EXCLUDED.altitude,
        system_slug = EXCLUDED.system_slug,
+       brand_slugs = EXCLUDED.brand_slugs,
        updated_at = CURRENT_TIMESTAMP`,
     [
       tenantId,
@@ -202,6 +230,7 @@ async function indexSingleConcept(
       generation.toString(),
       altitude,
       systemSlug,
+      brandSlugs,
     ]
   );
 

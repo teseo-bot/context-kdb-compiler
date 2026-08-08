@@ -73,6 +73,9 @@ function conceptContent(opts: {
   tags: string[];
   altitude?: number;
   confidence?: 'draft' | 'reviewed' | 'consolidated';
+  // ADR-215 WU-4.4: `unknown` a propósito — este campo sale de YAML del usuario y los tests de
+  // marca necesitan poder sembrar basura (una cadena, un número) para fijar la degradación.
+  brands?: unknown;
 }): string {
   return matter.stringify(opts.body, {
     type: 'Insight',
@@ -84,6 +87,7 @@ function conceptContent(opts: {
     confidence: opts.confidence ?? 'draft',
     pii: 'clean',
     altitude: opts.altitude ?? 2,
+    ...(opts.brands !== undefined ? { brands: opts.brands } : {}),
   });
 }
 
@@ -96,7 +100,8 @@ const TENANT_SEED = `k3w2-seed-${RUN_ID}`;
 const TENANT_RERUN = `k3w2-rerun-${RUN_ID}`;
 const TENANT_MODIFY = `k3w2-modify-${RUN_ID}`;
 const TENANT_ORIGIN = `d21013-origin-${RUN_ID}`;
-const ALL_TEST_TENANTS = [TENANT_SEED, TENANT_RERUN, TENANT_MODIFY, TENANT_ORIGIN];
+const TENANT_MARCA = `wu44-marca-${RUN_ID}`;
+const ALL_TEST_TENANTS = [TENANT_SEED, TENANT_RERUN, TENANT_MODIFY, TENANT_ORIGIN, TENANT_MARCA];
 
 let pool: Pool;
 
@@ -368,4 +373,96 @@ test('D-210.13: origin de la arista sigue a confidence del concepto, y la promoc
     'promover el concepto debe ascender su arista en el reindexado, sin paso operativo extra'
   );
   assert.equal(after.get('c-comercial/extraido.md'), 'EXTRACTED');
+});
+
+// ADR-215 WU-4.4 — la marca del artefacto baja a `okf_concepts.brand_slugs`.
+//
+// Sin esto la columna se queda en '{}' para siempre y el filtro de marca del orquestador
+// (WU-4.3) queda INERTE: todo parece compartido y las dos marcas leen el mismo corpus. El filtro
+// y el escritor sólo sirven juntos.
+test('WU-4.4: brand_slugs de okf_concepts sale de frontmatter.brands, se normaliza y sigue al reindexado', async () => {
+  const backend = new InMemoryStorageBackend();
+  const store = new BundleStore({ tenantId: TENANT_MARCA, storage: backend });
+  const embeddings = new MockEmbeddingsClient768();
+
+  const base = {
+    description: 'Concepto para probar el eje de marca',
+    body: 'Cuerpo sin vínculos.',
+    sources: ['conv:marca-1'],
+    tags: ['c-comercial', 'ventas'],
+  };
+
+  backend.seed('c-comercial/sin-marca.md', conceptContent({ ...base, title: 'Sin marca' }));
+  backend.seed(
+    'c-comercial/una-marca.md',
+    conceptContent({ ...base, title: 'Una marca', brands: ['cargalo'] })
+  );
+  backend.seed(
+    'c-comercial/dos-marcas.md',
+    conceptContent({ ...base, title: 'Dos marcas', brands: ['fleetco', 'cargalo'] })
+  );
+  // Tecleado a mano: mayúsculas, espacios, un vacío y un duplicado. Debe producir exactamente la
+  // misma fila que `['cargalo']` — si no, dos conceptos idénticos filtrarían distinto.
+  backend.seed(
+    'c-comercial/sucia.md',
+    conceptContent({ ...base, title: 'Sucia', brands: [' Cargalo ', 'cargalo', ''] })
+  );
+  // YAML basura: una cadena en vez de un array. Degrada a compartido, no revienta el indexado.
+  backend.seed(
+    'c-comercial/basura.md',
+    conceptContent({ ...base, title: 'Basura', brands: 'cargalo' })
+  );
+
+  await indexDelta(TENANT_MARCA, { pool, store, embeddings });
+
+  const readBrands = async (): Promise<Map<string, string[]>> => {
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT set_config($1, $2, false)', ['app.tenant_id', TENANT_MARCA]);
+      const { rows } = await client.query(
+        `SELECT path, brand_slugs FROM okf_concepts WHERE tenant_id = $1`,
+        [TENANT_MARCA]
+      );
+      return new Map(rows.map((r: any) => [r.path, r.brand_slugs]));
+    } finally {
+      await client.query('RESET app.tenant_id');
+      client.release();
+    }
+  };
+
+  const marcas = await readBrands();
+  assert.deepEqual(marcas.get('c-comercial/una-marca.md'), ['cargalo']);
+  // Orden estable: la normalización ordena, así que la aserción no depende del orden del YAML.
+  assert.deepEqual(marcas.get('c-comercial/dos-marcas.md'), ['cargalo', 'fleetco']);
+  assert.deepEqual(
+    marcas.get('c-comercial/sucia.md'),
+    ['cargalo'],
+    'mayúsculas, espacios, vacíos y duplicados deben colapsar a la misma fila'
+  );
+  assert.deepEqual(marcas.get('c-comercial/sin-marca.md'), [], 'ausente = compartido');
+  assert.deepEqual(marcas.get('c-comercial/basura.md'), [], 'YAML no-array = compartido, sin romper');
+
+  // El índice de navegación va SIEMPRE compartido: con marca esconderría a la otra marca TODOS
+  // sus hijos, incluidos los compartidos.
+  const indice = marcas.get('c-comercial/index.md');
+  if (indice !== undefined) {
+    assert.deepEqual(indice, [], 'los index.md son andamio de navegación, nunca de una marca');
+  }
+
+  // Reetiquetar y reindexar: el bundle es append-only ⇒ generation nueva ⇒ el delta lo revisita.
+  // Sin `brand_slugs` en el DO UPDATE esto conservaría la marca vieja, y el reindexado es
+  // justamente el camino por el que se corrige una marca mal puesta.
+  backend.seed(
+    'c-comercial/una-marca.md',
+    conceptContent({ ...base, title: 'Una marca', brands: ['fleetco'] })
+  );
+
+  await indexDelta(TENANT_MARCA, { pool, store, embeddings });
+
+  const despues = await readBrands();
+  assert.deepEqual(
+    despues.get('c-comercial/una-marca.md'),
+    ['fleetco'],
+    'reetiquetar debe sobrescribir la marca en el reindexado, no acumular ni conservar la vieja'
+  );
 });
