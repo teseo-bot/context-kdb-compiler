@@ -1,0 +1,110 @@
+name: Deploy Compiler to Cloud Run (tenant2 · analitica)
+
+# Compiler PROPIO de tenant2, en su proyecto. Hermano de `cloud-run.yml`, que despliega el
+# compiler COMPARTIDO a `micontexto-control` — y deliberadamente NO lo toca.
+#
+# POR QUÉ UN COMPILER POR TENANT Y NO REUTILIZAR EL COMPARTIDO. El compartido publica PCC de
+# aliados y sectorial al Cold-Tier (ADR-210 D-210.4) y no toca planos privados. El corpus de un
+# tenant vive en SU hot-tier, dentro del schema `kdb` (ADR-210 D-210.2). Apuntar el panel de
+# tenant2 al compiler de tenant1 —el atajo aparente— escribiría el conocimiento del
+# entrevistador en el corpus de Fleetco: es una fuga entre tenants, no un atajo.
+#
+# ⚠️ DISPARA SÓLO A MANO (`workflow_dispatch`), igual que el del panel de tenant2. El ciclo de
+# este tenant lo marca el frente del entrevistador, no cada push a `main`. Ése es justo el
+# acoplamiento que ADR-214 D-214.6 existe para romper.
+
+on:
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: micontexto-tenant2-503516
+  PROJECT_NUMBER: '570550781878'
+  REGION: us-central1
+  SERVICE_NAME: context-kdb-compiler
+  GAR_LOCATION: us-central1-docker.pkg.dev
+  REPOSITORY: teseo-context-repo
+  RUNTIME_SA: compiler-runtime@micontexto-tenant2-503516.iam.gserviceaccount.com
+  HOT_TIER_INSTANCE: micontexto-tenant2-503516:us-central1:hot-tier
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: 'read'
+  id-token: 'write'
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy Compiler to Cloud Run (tenant2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/570550781878/locations/global/workloadIdentityPools/github-actions/providers/github-actions-provider'
+          service_account: 'github-deployer@micontexto-tenant2-503516.iam.gserviceaccount.com'
+
+      - run: gcloud auth configure-docker ${{ env.GAR_LOCATION }} --quiet
+
+      - run: docker build -t ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+
+      - run: docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+
+      - id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+
+          # 🔴 NADA DE COMENTARIOS DENTRO DE LOS BLOQUES `|`. La acción parte el literal por
+          # líneas y espera CLAVE=VALOR: un `#` no se ignora, se intenta montar como variable.
+          # Ya tumbó un deploy del panel de tenant1 (run 31033445622).
+          env_vars: |
+            NODE_ENV=production
+
+          # `COLD_TIER_URL` ← `KDB_LOCAL_URL` NO es una errata, es la costura del compiler por
+          # tenant, y replica exactamente lo que ya corre en tenant1. El nombre de la variable
+          # es legado: los tres pools del servicio (src/server.ts:39, :50 y
+          # src/ingestion/candidate-poller.ts:344) leen `COLD_TIER_URL`, pero en un compiler de
+          # tenant lo que hay al otro lado es SU PROPIO hot-tier con `search_path=kdb,public`,
+          # no el Cold-Tier compartido. Renombrar la variable es una limpieza aparte; hacerlo
+          # aquí, en el despliegue que estrena el servicio, mezclaría dos cambios.
+          #
+          # `M2M_API_KEY` y `TESEO_API_KEY` son los MISMOS valores que ya usan el panel y el
+          # orquestador del tenant: son las claves de la costura S2S, no credenciales por
+          # servicio. Cambiar una sola punta devuelve 401 sin decir por qué.
+          #
+          # ⚠️ Cloud Run valida los secretos al CREAR la revisión: uno que falte no da un error
+          # en runtime, impide que la revisión nazca. Los cuatro tienen que existir en el
+          # Secret Manager de tenant2 ANTES del primer disparo.
+          secrets: |
+            COLD_TIER_URL=KDB_LOCAL_URL:latest
+            GEMINI_DIRECT_KEY=GEMINI_DIRECT_KEY:latest
+            M2M_API_KEY=M2M_API_KEY:latest
+            TESEO_API_KEY=TESEO_API_KEY:latest
+
+          # `--allow-unauthenticated` replica tenant1 y el compartido, no relaja nada respecto a
+          # ellos: el llamante (el panel del tenant) autentica con `Bearer TESEO_API_KEY`, NO
+          # con token de identidad de Google, y Cloud Run valida el invoker ANTES de que la
+          # petición llegue al proceso. Cerrarlo aquí devolvería 403 a la ingesta entera. Va en
+          # SEC-BACKLOG junto con firmar las llamadas.
+          #
+          # `--max-instances=1` es presupuesto de conexiones (ADR-213 D-213.2), no tacañería: el
+          # proceso abre DOS pools contra un `db-g1-small` (~47 conexiones utilizables). El techo
+          # real es el PRODUCTO maxScale × max del pool, así que acotar el pool sin acotar el
+          # maxScale no acota nada. Mismo valor que tenant1.
+          flags: >-
+            --add-cloudsql-instances=${{ env.HOT_TIER_INSTANCE }}
+            --service-account=${{ env.RUNTIME_SA }}
+            --allow-unauthenticated
+            --max-instances=1
+            --cpu=1
+            --memory=512Mi
+            --cpu-boost
+
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
+
+      - name: Show Deployment URL
+        run: echo "Deployed URL - ${{ steps.deploy.outputs.url }}"
