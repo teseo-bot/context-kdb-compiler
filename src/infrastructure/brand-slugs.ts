@@ -26,7 +26,7 @@
  * visible (recuperable, y corregible reetiquetando); al leer, asumir de menos evita servir el
  * corpus de otra marca.
  */
-export function normalizeBrandSlugs(input?: unknown): string[] {
+export function normalizeSlugs(input?: unknown): string[] {
   if (!Array.isArray(input) || input.length === 0) return [];
   return Array.from(
     new Set(
@@ -37,3 +37,12 @@ export function normalizeBrandSlugs(input?: unknown): string[] {
     )
   ).sort();
 }
+
+/**
+ * ADR-220 — el proyecto usa EXACTAMENTE el mismo normalizador, y por la misma razón por la que
+ * éste vive en un archivo propio: con uno por eje, el mismo valor tecleado acabaría filtrando
+ * distinto según la puerta por la que entró. Se exporta con el nombre viejo para no tocar los
+ * dos call sites de marca.
+ */
+export const normalizeBrandSlugs = normalizeSlugs;
+export const normalizeProjectSlugs = normalizeSlugs;

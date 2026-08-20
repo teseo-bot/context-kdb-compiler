@@ -84,6 +84,16 @@ export const IngestRequestV1Schema = z.object({
   // descuido del cliente: es el default correcto, y el que preserva el retargeting. Por eso
   // el campo es opcional y no tiene default no-vacío.
   brand_slugs: z.array(z.string()).optional(),
+
+  // ADR-220 D-220.1 — el eje de PROYECTO. Hermano de `brand_slugs` y NUNCA el mismo campo:
+  // reutilizar aquél haría que el significado dependiera del tenant, y el predicado correcto
+  // con él. Un tenant puede tener los dos ejes a la vez.
+  //
+  // AUSENTE o VACÍO = BASE DEL TENANT, visible para todos sus agentes. Mismo predicado que la
+  // marca, y tiene que serlo: lo contrario dejaría inaccesible todo lo cargado antes de que
+  // existieran los proyectos. La inversión que pide D-220.2 —proyecto preseleccionado, base
+  // del tenant a mano— vive en el PANEL, no en el contrato.
+  project_slugs: z.array(z.string()).optional(),
 });
 
 export type IngestDocument = z.infer<typeof IngestDocumentSchema>;

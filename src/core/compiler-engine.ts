@@ -3,7 +3,8 @@ import { Pool, PoolClient } from 'pg';
 import { chunkTextSemantic } from './semantic-chunker';
 import { EmbeddingsClient, GeminiEmbeddingsClient } from '../infrastructure/embeddings';
 import { MockEmbeddingsClient } from '../infrastructure/embeddings.mock';
-import { normalizeBrandSlugs } from '../infrastructure/brand-slugs';
+import { columnaExiste } from '../infrastructure/columna-opcional';
+import { normalizeSlugs } from '../infrastructure/brand-slugs';
 
 export interface CompilerOptions {
   dbUrl?: string; // e.g. postgres://user:pass@localhost:5436/dbname
@@ -25,6 +26,8 @@ export interface DocumentMetadata {
    * Ausente o vacío = COMPARTIDO, visible para todas las marcas ([INV-215.5]).
    */
   brandSlugs?: string[];
+  /** ADR-220 D-220.1: eje de proyecto. Va a la COLUMNA `project_slugs`, no al JSON. */
+  projectSlugs?: string[];
   [key: string]: any;
 }
 
@@ -141,12 +144,26 @@ export class CompilerEngine {
         // 2. Insert Document
         // ADR-215 WU-4.4: `brandSlugs` sale de metadata ANTES de serializar — va a su propia
         // columna, no al JSON. Guardarlo en los dos sitios invitaría a que divergieran.
-        const { brandSlugs: _brandSlugsRaw, ...metadataSinMarca } = metadata;
-        const brandSlugs = normalizeBrandSlugs(metadata.brandSlugs);
+        const {
+          brandSlugs: _brandSlugsRaw,
+          projectSlugs: _projectSlugsRaw,
+          ...metadataSinAlcance
+        } = metadata;
+        const brandSlugs = normalizeSlugs(metadata.brandSlugs);
+        const projectSlugs = normalizeSlugs(metadata.projectSlugs);
+
+        // ADR-220 D-220.7 — `project_slugs` se escribe SÓLO donde la columna existe. La 013
+        // enseñó lo que cuesta lo contrario: un INSERT que nombra una columna sin migrar deja
+        // `/v1/ingest` roto por construcción, y no avisa hasta que alguien ingiere.
+        const hayProyecto = await columnaExiste(client, 'documents', 'project_slugs');
 
         const docRes = await client.query(
-          'INSERT INTO documents (document_hash, content, metadata, tenant_id, brand_slugs) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [hash, markdown, JSON.stringify(metadataSinMarca), tenantId, brandSlugs]
+          hayProyecto
+            ? 'INSERT INTO documents (document_hash, content, metadata, tenant_id, brand_slugs, project_slugs) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id'
+            : 'INSERT INTO documents (document_hash, content, metadata, tenant_id, brand_slugs) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+          hayProyecto
+            ? [hash, markdown, JSON.stringify(metadataSinAlcance), tenantId, brandSlugs, projectSlugs]
+            : [hash, markdown, JSON.stringify(metadataSinAlcance), tenantId, brandSlugs]
         );
         const documentId = docRes.rows[0].id;
 
@@ -177,10 +194,18 @@ export class CompilerEngine {
         // —sería el mismo array repetido n veces, y un text[] dentro de UNNEST se aplana— sino
         // como constante del SELECT: todos los chunks de un documento comparten su marca por
         // definición.
-        await client.query(`
-          INSERT INTO chunks (document_id, chunk_index, chunk_text, embedding, tenant_id, brand_slugs)
-          SELECT *, $6::text[] FROM UNNEST ($1::uuid[], $2::int[], $3::text[], $4::vector[], $5::text[])
-        `, [documentIds, chunkIndexes, chunkTexts, embeddingStrs, tenantIds, brandSlugs]);
+        // Los chunks heredan los DOS ejes del documento, por la misma razón: todos los
+        // chunks de un documento comparten su alcance por definición.
+        await client.query(
+          hayProyecto
+            ? `INSERT INTO chunks (document_id, chunk_index, chunk_text, embedding, tenant_id, brand_slugs, project_slugs)
+               SELECT *, $6::text[], $7::text[] FROM UNNEST ($1::uuid[], $2::int[], $3::text[], $4::vector[], $5::text[])`
+            : `INSERT INTO chunks (document_id, chunk_index, chunk_text, embedding, tenant_id, brand_slugs)
+               SELECT *, $6::text[] FROM UNNEST ($1::uuid[], $2::int[], $3::text[], $4::vector[], $5::text[])`,
+          hayProyecto
+            ? [documentIds, chunkIndexes, chunkTexts, embeddingStrs, tenantIds, brandSlugs, projectSlugs]
+            : [documentIds, chunkIndexes, chunkTexts, embeddingStrs, tenantIds, brandSlugs]
+        );
 
         await client.query('COMMIT');
 
