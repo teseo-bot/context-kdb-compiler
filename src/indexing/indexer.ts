@@ -24,6 +24,7 @@ import { BundleStore, FRONTMATTER_YAML_ENGINE } from '../infrastructure/bundle-s
 import { EmbeddingsClient } from '../infrastructure/embeddings';
 import { HOCFLIT_SYSTEMS } from '../infrastructure/concept-frontmatter.schema';
 import { normalizeBrandSlugs } from '../infrastructure/brand-slugs';
+import { columnaExiste } from '../infrastructure/columna-opcional';
 
 const MAX_EMBED_INPUT_CHARS = 8000;
 const CROSS_LINK_REGEX = /\]\((\/[a-z0-9-]+\/[a-z0-9-]+\.md)\)/g;
@@ -196,6 +197,10 @@ async function indexSingleConcept(
   // WU-4.4: `frontmatter` ya es `{}` para los index.md, así que esto les da [] = compartido por
   // construcción, no por dato ausente — el mismo criterio que `origin` unas líneas abajo.
   const brandSlugs = brandSlugsFor(frontmatter.brands);
+  // ADR-220: mismo criterio que la marca — `{}` en los index.md por construcción, no por dato
+  // ausente. El frontmatter del artefacto puede traer `projects:` igual que trae `brands:`.
+  const projectSlugs = brandSlugsFor((frontmatter as Record<string, unknown>).projects);
+  const hayProyecto = await columnaExiste(client, 'okf_concepts', 'project_slugs');
 
   const embedInput = `${title}\n${description}\n${bodyText}`.slice(0, MAX_EMBED_INPUT_CHARS);
   const [embedding] = await embeddings.embed([embedInput]);
@@ -203,35 +208,34 @@ async function indexSingleConcept(
 
   const contentSha256 = createHash('sha256').update(content, 'utf8').digest('hex');
 
+  // WU-4.4: `brand_slugs` va también en el DO UPDATE — sin eso, reetiquetar un concepto y
+  // reindexarlo dejaría el alcance viejo en la fila, y el reindexado es precisamente el camino
+  // por el que se corrige un alcance mal puesto. ADR-220 añade `project_slugs` con la misma
+  // regla, y GUARDADO: donde la columna no existe, la consulta no la nombra (D-220.7).
+  const columnas = ['tenant_id', 'path', 'frontmatter', 'body_text', 'embedding',
+                    'content_sha256', 'gcs_generation', 'altitude', 'system_slug', 'brand_slugs'];
+  const valores: unknown[] = [
+    tenantId, path, JSON.stringify(frontmatter), bodyText, embeddingLiteral,
+    contentSha256, generation.toString(), altitude, systemSlug, brandSlugs,
+  ];
+  if (hayProyecto) {
+    columnas.push('project_slugs');
+    valores.push(projectSlugs);
+  }
+  const marcadores = valores.map((_, i) => `$${i + 1}`).join(', ');
+  const actualiza = columnas
+    .filter((c) => c !== 'tenant_id' && c !== 'path')
+    .map((c) => `${c} = EXCLUDED.${c}`)
+    .join(',\n       ');
+
   await client.query(
-    // WU-4.4: $1..$10 — DIEZ marcadores, DIEZ elementos. `brand_slugs` va también en el DO UPDATE:
-    // sin eso, reetiquetar un concepto y reindexarlo dejaría la marca vieja en la fila, y el
-    // reindexado es precisamente el camino por el que se corrige una marca mal puesta.
     `INSERT INTO okf_concepts
-       (tenant_id, path, frontmatter, body_text, embedding, content_sha256, gcs_generation, altitude, system_slug, brand_slugs, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+       (${columnas.join(', ')}, updated_at)
+     VALUES (${marcadores}, CURRENT_TIMESTAMP)
      ON CONFLICT (tenant_id, path) DO UPDATE SET
-       frontmatter = EXCLUDED.frontmatter,
-       body_text = EXCLUDED.body_text,
-       embedding = EXCLUDED.embedding,
-       content_sha256 = EXCLUDED.content_sha256,
-       gcs_generation = EXCLUDED.gcs_generation,
-       altitude = EXCLUDED.altitude,
-       system_slug = EXCLUDED.system_slug,
-       brand_slugs = EXCLUDED.brand_slugs,
+       ${actualiza},
        updated_at = CURRENT_TIMESTAMP`,
-    [
-      tenantId,
-      path,
-      JSON.stringify(frontmatter),
-      bodyText,
-      embeddingLiteral,
-      contentSha256,
-      generation.toString(),
-      altitude,
-      systemSlug,
-      brandSlugs,
-    ]
+    valores
   );
 
   // Replace okf_edges del from_path: borrar todas las salientes de este path y reinsertar

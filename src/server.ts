@@ -118,7 +118,7 @@ app.post('/v1/ingest', async (c) => {
     const rawBody = await c.req.json();
     const parsedRequest = IngestRequestV1Schema.parse(rawBody);
 
-    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible, hocflit_hint, brand_slugs } = parsedRequest;
+    const { tenant_id, documents, workflow_id, tags, cold_tier_eligible, hocflit_hint, brand_slugs, project_slugs } = parsedRequest;
 
     // E11-H3: Store ingestion job details in a new 'ingest_jobs' table
     // This is a conceptual call; actual implementation would use a DB client
@@ -162,6 +162,8 @@ app.post('/v1/ingest', async (c) => {
           // escribe en la COLUMNA `brand_slugs` de documents y chunks, que es lo que filtra
           // la recuperación. Dentro del JSON de metadata sería invisible para el WHERE.
           ...(brand_slugs ? { brandSlugs: brand_slugs } : {}),
+          // ADR-220 D-220.1: el proyecto viaja por su propio campo hasta su propia columna.
+          ...(project_slugs ? { projectSlugs: project_slugs } : {}),
         });
         // In a real system, each document compilation might update the job status
       } catch (docError) {
