@@ -16,6 +16,21 @@ name: Deploy Compiler to Cloud Run (tenant2 · analitica)
 on:
   workflow_dispatch:
 
+# ─── UN DESPLIEGUE A LA VEZ CONTRA ESTE SERVICIO ────────────────────────────────────
+# Hermano del bloque de `cloud-run.yml`, donde está el razonamiento completo. Aquí sólo lo
+# que cambia: este workflow es `workflow_dispatch` puro, así que no compite con merges a
+# `main` — pero sí consigo mismo, y dos disparos manuales seguidos son fáciles de encadenar
+# cuando se está afinando el tenant.
+#
+# 🔴 El grupo lleva el PROYECTO porque `SERVICE_NAME` es idéntico al del compiler compartido
+# (`context-kdb-compiler` en los dos). Con un grupo por servicio a secas, un despliegue de
+# tenant2 encolaría detrás de uno de control y viceversa: dos planos que no comparten nada.
+# Va LITERAL: el contexto `env` NO existe en `concurrency` y se expandiría a cadena vacía,
+# dejando ambos workflows en el mismo grupo sin un solo aviso.
+concurrency:
+  group: deploy-context-kdb-compiler-micontexto-tenant2-503516
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: micontexto-tenant2-503516
   PROJECT_NUMBER: '570550781878'

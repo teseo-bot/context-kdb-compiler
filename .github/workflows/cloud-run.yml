@@ -24,6 +24,34 @@ on:
       - main
   workflow_dispatch:
 
+# ─── UN DESPLIEGUE A LA VEZ CONTRA ESTE SERVICIO ────────────────────────────────────
+# Sin esto, dos merges seguidos a `main` disparan dos runs que compiten por el mismo
+# servicio de Cloud Run, y la revisión que acaba sirviendo es la del run que TERMINA
+# último — no la del commit más nuevo. Ocurrió en el orquestador el 2026-08-20 (dos merges
+# con NUEVE segundos de diferencia, tres revisiones en cinco minutos): salió bien por orden
+# de llegada, no por diseño. Este repo tiene exactamente la misma forma de CD.
+#
+# `cancel-in-progress: false` = ENCOLAR, nunca cancelar. Cortar un deploy a media promoción
+# puede dejar la revisión a medias; esperar sólo cuesta minutos. Y encolar NO deja atrás el
+# commit nuevo: GitHub mantiene UN único run pendiente por grupo y el más reciente desplaza
+# al que esperaba ⇒ el último commit sigue ganando, ahora por construcción.
+#
+# 🔴 EL PROYECTO VA EN EL NOMBRE DEL GRUPO, y no es decoración. Este repo despliega DOS
+# servicios que se llaman igual: el compiler COMPARTIDO de `micontexto-control` (aquí) y el
+# compiler PROPIO de tenant2 (`deploy-tenant2.yml`). Ambos declaran
+# `SERVICE_NAME: context-kdb-compiler`, así que un grupo por servicio a secas los
+# serializaría entre sí — dos planos que no comparten ni proyecto ni base de datos.
+#
+# 🔴 Y va LITERAL, no `${{ env.SERVICE_NAME }}`: el contexto `env` NO está disponible en
+# `concurrency` — ni a nivel de workflow (sólo `github`, `inputs`, `vars`) ni a nivel de job.
+# Una referencia a `env` aquí no falla: se expande a cadena VACÍA. Los dos workflows
+# quedarían en el grupo `deploy--`, es decir el MISMO, que es justo lo que este bloque
+# existe para evitar. Fallaría en silencio y sólo se notaría al encolarse un deploy que no
+# tenía por qué esperar.
+concurrency:
+  group: deploy-context-kdb-compiler-micontexto-control
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: micontexto-control
   REGION: us-central1
