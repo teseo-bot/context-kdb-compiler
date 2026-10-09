@@ -31,13 +31,22 @@
 --   · la versión publicada existe en `casos_exito_versiones` (FK compuesta);
 --   · una versión publicada no se reescribe (trigger) y no se borra mientras sea la vigente (FK).
 --
--- ESCRITURAS. Sólo el rol de servicio, como en 007: no hay políticas INSERT/UPDATE. ⚠️ No está
--- medido si el dueño de las tablas en Cloud SQL esquiva `FORCE ROW LEVEL SECURITY` (no es
--- superusuario real). Medirlo antes del paso 3 del ADR (autoría desde el portal): si no lo esquiva,
--- la autoría necesitará una política de escritura para su rol, y ese rol aún no existe.
+-- ⛔ APLICAR COMO `postgres`, NO COMO `kdb_compiler`. Medido el 2026-10-09 en producción:
+-- `kdb_compiler` no tiene CREATE sobre el esquema `public` y la migración aborta con
+-- «permission denied for schema public» en el primer CREATE TABLE. En el Cold-Tier el dueño de las
+-- tablas es `postgres` y no hay secreto de administrador: la aplica el CEO, con el proxy en 5441
+-- y `psql ... user=postgres` (pide la contraseña).
+--
+-- ESCRITURAS. Las hace `kdb_compiler` (LOGIN + BYPASSRLS, G5-W1b), así que `FORCE ROW LEVEL
+-- SECURITY` no le afecta y no hacen falta políticas INSERT/UPDATE. Lo que sí necesita es el permiso
+-- sobre cada tabla, porque no es dueño: va en el bloque de GRANTs del final. Sin él, la autoría del
+-- paso 3 del ADR fallaría con «permission denied» la primera vez que un aliado guardara un caso
+-- (el mismo olvido que dejó a `kdb_reader` sin SELECT sobre `chunks` el 2026-07-20).
 --
 -- Idempotente: IF NOT EXISTS, DROP POLICY IF EXISTS + CREATE POLICY, y guardas en pg_constraint /
--- pg_trigger. Probada dos veces seguidas contra Postgres 16 + pgvector 0.8.4 local el 2026-10-08.
+-- pg_trigger. Probada dos veces seguidas contra Postgres 16 + pgvector 0.8.4 local el 2026-10-08,
+-- y otra vez el 2026-10-09 con los GRANTs a `kdb_compiler`, aplicada como dueño y escribiendo como
+-- `kdb_compiler` con BYPASSRLS.
 
 BEGIN;
 
@@ -176,13 +185,21 @@ CREATE POLICY casos_versiones_publicadas_read ON casos_exito_versiones FOR SELEC
     )
 );
 
--- Lectura para la credencial compartida del orquestador. Condicionado a que el rol exista: en
--- dev/CI no hay `kdb_reader` y un GRANT a un rol inexistente aborta la transacción (mismo
--- patrón que la 011 con app_rw).
+-- GRANTs explícitos, condicionados a que cada rol exista: en dev/CI no hay `kdb_reader` ni
+-- `kdb_compiler`, y un GRANT a un rol inexistente aborta la transacción (mismo patrón que la 011
+-- con app_rw).
+--   · `kdb_reader` (orquestador): sólo lee; la RLS decide qué filas.
+--   · `kdb_compiler` (autoría y curaduría): escribe la cabeza del caso e inserta versiones. Sin
+--     UPDATE ni DELETE sobre `casos_exito_versiones`: una versión publicada es la evidencia de un
+--     fee y el servicio no tiene con qué borrarla ni reescribirla.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kdb_reader') THEN
         GRANT SELECT ON casos_exito, casos_exito_versiones TO kdb_reader;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kdb_compiler') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON casos_exito TO kdb_compiler;
+        GRANT SELECT, INSERT ON casos_exito_versiones TO kdb_compiler;
     END IF;
 END $$;
 
