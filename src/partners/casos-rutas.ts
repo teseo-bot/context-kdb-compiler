@@ -7,12 +7,25 @@
  *   ZodError → 422 · CasoIncompletoError → 422 {hallazgos} · CasoNoEncontradoError → 404 ·
  *   CasoConflictoError → 409 {estado}.
  *
- * Ninguna de estas rutas publica (D-224.2): publicar es de la curaduría de micontexto.
+ * Ninguna de las rutas del aliado publica (D-224.2). Publicar y devolver son de la curaduría de
+ * micontexto: rutas `/internal/curaduria-caso*`, que exigen OTRA clave, `CURADURIA_M2M_API_KEY`,
+ * montada sólo en este servicio y en el panel de control. Sin ella puesta, responden 500 y no
+ * hacen nada: fallan cerradas.
  */
 
 import type { Context, Hono } from 'hono';
 import type { Pool } from 'pg';
 import { z } from 'zod';
+import type { EmbeddingsClient } from '../infrastructure/embeddings';
+import {
+  CuraduriaCasoDevolverInputSchema,
+  CuraduriaCasoGetInputSchema,
+  CuraduriaCasoPublicarInputSchema,
+  devolverCaso,
+  listarEnRevision,
+  obtenerParaCuraduria,
+  publicarCaso,
+} from './casos-curaduria';
 import {
   CasoConflictoError,
   CasoIncompletoError,
@@ -98,5 +111,29 @@ export function registrarRutasCasosAliado(app: Hono, pool: Pool): void {
   ruta('/internal/partner-caso-submit', async (c) => {
     const input = PartnerCasoSubmitInputSchema.parse(await cuerpoJson(c));
     return c.json({ caso: await enviarARevision(pool, input.partner_id, input.caso_id) }, 200);
+  });
+}
+
+export function registrarRutasCuraduria(app: Hono, pool: Pool, embeddings: EmbeddingsClient): void {
+  const ruta = (path: string, manejador: Manejador) =>
+    app.post(path, rutaCasos(path, 'CURADURIA_M2M_API_KEY', manejador));
+
+  ruta('/internal/curaduria-casos-list', async (c) => {
+    return c.json({ casos: await listarEnRevision(pool) }, 200);
+  });
+
+  ruta('/internal/curaduria-caso-get', async (c) => {
+    const input = CuraduriaCasoGetInputSchema.parse(await cuerpoJson(c));
+    return c.json({ caso: await obtenerParaCuraduria(pool, input.caso_id) }, 200);
+  });
+
+  ruta('/internal/curaduria-caso-devolver', async (c) => {
+    const input = CuraduriaCasoDevolverInputSchema.parse(await cuerpoJson(c));
+    return c.json({ caso: await devolverCaso(pool, input) }, 200);
+  });
+
+  ruta('/internal/curaduria-caso-publicar', async (c) => {
+    const input = CuraduriaCasoPublicarInputSchema.parse(await cuerpoJson(c));
+    return c.json({ caso: await publicarCaso(pool, embeddings, input) }, 200);
   });
 }

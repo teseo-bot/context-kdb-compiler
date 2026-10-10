@@ -99,6 +99,13 @@ jobs:
             M2M_API_KEY=COMPILER_M2M_API_KEY:latest
             GEMINI_DIRECT_KEY=GEMINI_DIRECT_KEY:latest
             TESEO_API_KEY=TESEO_API_KEY:latest
+            CURADURIA_M2M_API_KEY=COMPILER_CURADURIA_API_KEY:latest
+          # CURADURIA_M2M_API_KEY (ADR-224): la clave de `/internal/curaduria-caso*` —cola, devolver y
+          # PUBLICAR casos de éxito—. Sólo la tienen este servicio y el panel de control; la del
+          # portal de aliados (`M2M_API_KEY`) no publica. ⛔ Cloud Run valida cada secreto al crear
+          # la revisión: `COMPILER_CURADURIA_API_KEY` tiene que existir en micontexto-control, con
+          # `secretAccessor` para `compiler-shared-runtime`, ANTES de mergear esto, o el deploy falla.
+          #
           # `--allow-unauthenticated` replica el estado actual, no lo empeora: los tres
           # llamantes autentican con un bearer de aplicación (`Bearer TESEO_API_KEY`,
           # `x-api-key: M2M_API_KEY`), NO con token de identidad de Google, y Cloud Run

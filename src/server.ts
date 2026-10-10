@@ -28,7 +28,7 @@ import {
 import { runPartnerAssist, PartnerAssistInput, PartnerAssistInputError, PartnerAssistLlmError } from './partners/partner-assist';
 import { PartnerLicenseSyncInputSchema, upsertLicense, deleteLicense } from './partners/license-sync';
 import { getPartnerPackageEvalStatus } from './partners/partner-eval-status';
-import { registrarRutasCasosAliado } from './partners/casos-rutas';
+import { registrarRutasCasosAliado, registrarRutasCuraduria } from './partners/casos-rutas';
 import { runV2 } from './ingestion/candidate-poller';
 import { BundleStorageBackend } from './infrastructure/bundle-store';
 import { InMemoryStorageBackend } from './infrastructure/bundle-store.mock';
@@ -953,6 +953,10 @@ app.get('/internal/partner-package-eval-status', async (c) => {
 // `casos_exito` del Cold-Tier con `indexerPool` (COLD_TIER_URL = `kdb_compiler`, BYPASSRLS): el
 // aislamiento por aliado lo pone cada consulta con su `WHERE partner_id`. Ver src/partners/casos.ts.
 registrarRutasCasosAliado(app, indexerPool);
+// …y su curaduría desde el panel de control (`/internal/curaduria-caso*`): cola, devolver con
+// motivo y publicar, que calcula el embedding del dolor con el MISMO cliente de 768 dimensiones que
+// el corpus. Clave propia `CURADURIA_M2M_API_KEY`: la del portal no puede publicar.
+registrarRutasCuraduria(app, indexerPool, indexerEmbeddings);
 
 // K0-W1 (F-H3): validación de credencial de embeddings al arranque.
 // Ya no existe fallback a mock en runtime: sin credencial, compile() falla en la primera llamada.
