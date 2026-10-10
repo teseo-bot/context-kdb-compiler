@@ -9,10 +9,14 @@ name: Deploy Compiler to Cloud Run
 # hace merge sobre lo que ya está: cualquier despliegue desde cero, o un cambio de
 # proyecto, resucitaba config equivocada. Concretamente, tal como estaba habría deshecho
 # dos arreglos al repuntarse a control:
-#   - `M2M_API_KEY=M2M_API_KEY:latest` → el secreto `M2M_API_KEY` de control es una clave
-#     DISTINTA de la que usan el portal de aliados y los paneles (65 bytes con newline al
-#     final vs. 27 bytes). Montarla devuelve 401 a todo `/internal/partner-*`. El valor
-#     compartido vive en `COMPILER_M2M_API_KEY`.
+#   - `M2M_API_KEY=M2M_API_KEY:latest` → en el repunte (2026-07-30) el secreto `M2M_API_KEY`
+#     de control estaba en su versión 1: 65 bytes con newline al final, contra los 27 que
+#     usan el portal de aliados y los paneles ⇒ 401 a todo `/internal/partner-*`. Por eso el
+#     valor compartido se copió a `COMPILER_M2M_API_KEY`. Desde la versión 2 de
+#     `M2M_API_KEY` (2026-08-19) los dos secretos guardan la MISMA clave: medido el
+#     2026-10-10, mismo sha256 y el compiler acepta las dos. Se sigue montando
+#     `COMPILER_M2M_API_KEY` porque es el secreto propio del compiler. La versión 1 sigue
+#     habilitada: fijar `M2M_API_KEY:1` en cualquier servicio devuelve el 401.
 #   - `DATABASE_URL` → muerto en producción: los tres pools del servicio prefieren
 #     `COLD_TIER_URL` (src/server.ts:39, :50 y src/ingestion/candidate-poller.ts:344), que
 #     siempre está puesto. Montarlo solo reintroduce el adjunto Cloud SQL del proyecto
