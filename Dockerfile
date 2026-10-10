@@ -1,5 +1,13 @@
+# Imagen base desde `mirror.gcr.io`, el espejo público de Docker Hub que mantiene Google, y no
+# desde Docker Hub directo. Los runners de GitHub descargan sin autenticarse y Docker Hub los
+# corta: el run 37993266084 del compiler falló tres veces seguidas resolviendo el `FROM` (504
+# en auth.docker.io y luego 429 en registry-1.docker.io). El espejo sirve los MISMOS digests
+# que Docker Hub (medido el 2026-10-09) y no pide credenciales, así que funciona igual en el CD,
+# en CI y en un `docker build` local. El `library/` es obligatorio: es el namespace de las
+# imágenes oficiales, que Docker Hub sobreentiende y el espejo no.
+
 # Stage 1: Builder
-FROM node:20-alpine AS builder
+FROM mirror.gcr.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +25,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # Stage 2: Production
-FROM node:20-alpine AS runner
+FROM mirror.gcr.io/library/node:20-alpine AS runner
 
 ENV NODE_ENV=production
 
